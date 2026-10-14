@@ -4,4 +4,5 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${SWIFT_IMAGE:-swift:6.0-noble}"
 docker run --rm -v "$ROOT":/src -v meetingasr-build:/src/.build -w /src "$IMAGE" \
-  bash -c "swift ${*:-test}"
+  bash -c "command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl bzip2 >/dev/null; }
+           scripts/fetch-sherpa-onnx.sh && swift ${*:-test}"

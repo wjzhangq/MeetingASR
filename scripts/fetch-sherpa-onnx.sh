@@ -27,7 +27,17 @@ echo "Downloading $URL"
 curl -fSL "$URL" -o "$TMP/pkg.tar.bz2"
 tar xjf "$TMP/pkg.tar.bz2" -C "$TMP"
 rm -rf "$DEST"; mkdir -p "$DEST"
-cp -R "$TMP/$NAME/include" "$DEST/include"
+
+# Linux shared-cpu 包不含 include/，从源码仓库下载头文件
+if [[ -d "$TMP/$NAME/include" ]]; then
+  cp -R "$TMP/$NAME/include" "$DEST/include"
+else
+  echo "Fetching headers from source repository..."
+  mkdir -p "$DEST/include/sherpa-onnx/c-api"
+  curl -fSL "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/$VERSION/sherpa-onnx/c-api/c-api.h" \
+    -o "$DEST/include/sherpa-onnx/c-api/c-api.h"
+fi
+
 mkdir -p "$DEST/lib"
 cp -a "$TMP/$NAME/lib/"*sherpa-onnx-c-api* "$TMP/$NAME/lib/"*onnxruntime* "$DEST/lib/"
 echo "$NAME" > "$DEST/.version"
