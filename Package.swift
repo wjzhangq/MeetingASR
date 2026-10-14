@@ -4,17 +4,21 @@ import PackageDescription
 // sherpa-onnx 预编译库由 scripts/fetch-sherpa-onnx.sh 下载到 Vendor/sherpa-onnx/{include,lib}。
 let vendorLib = "Vendor/sherpa-onnx/lib"
 
-// rpath：.app 内为 Contents/Frameworks；开发时可执行文件位于 .build/<triple>/<config>/，指回 Vendor。
+// rpath：.app 内为 Contents/Frameworks；开发时指回 Vendor。
+// 开发期产物目录随工具链不同：旧版 SwiftPM 为 .build/<triple>/<config>/（上溯 3 级到仓库根），
+// 新版（Swift 6.x 的 build-system）为 .build/out/Products/<Config>/（上溯 4 级），两条都加上。
 let sherpaLinker: [LinkerSetting] = [
     .unsafeFlags([
         "-L\(vendorLib)",
         "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
         "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../../../\(vendorLib)",
+        "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../../../../\(vendorLib)",
     ], .when(platforms: [.macOS])),
     .unsafeFlags([
         "-L\(vendorLib)",
         "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../lib",
         "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../../../\(vendorLib)",
+        "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../../../../\(vendorLib)",
     ], .when(platforms: [.linux])),
 ]
 
