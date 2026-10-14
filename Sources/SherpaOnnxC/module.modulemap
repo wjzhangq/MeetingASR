@@ -1,0 +1,6 @@
+module SherpaOnnxC [system] {
+  header "shim.h"
+  link "sherpa-onnx-c-api"
+  link "onnxruntime"
+  export *
+}

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleExecutable</key>
+	<string>MeetingASR</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.meetingasr.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>MeetingASR</string>
+	<key>CFBundleDisplayName</key>
+	<string>MeetingASR</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.2</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSArchitecturePriority</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MeetingASR 需要使用麦克风录制本人发言，录音仅保存在本机并在识别完成后删除。</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>MeetingASR 需要录制腾讯会议、Teams 等会议软件的声音，录音仅保存在本机并在识别完成后删除。</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>本地运行，不上传任何数据。</string>
+</dict>
+</plist>
