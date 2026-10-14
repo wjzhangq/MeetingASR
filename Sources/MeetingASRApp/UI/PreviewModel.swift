@@ -163,9 +163,10 @@ final class PreviewModel: ObservableObject {
                 flush()
                 cur = (s.speaker, s.start, s.end, [s.text], pendingPause)
                 pendingPause = false
-            } else {
-                cur?.end = max(cur!.end, s.end)
-                cur?.texts.append(s.text)
+            } else if var c = cur {
+                c.end = max(c.end, s.end)
+                c.texts.append(s.text)
+                cur = c
             }
         }
         flush()
