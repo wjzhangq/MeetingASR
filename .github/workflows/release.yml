@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and package app
+        env:
+          SIGN_IDENTITY: "-"  # Ad-hoc signing for GitHub releases
+        run: scripts/build-app.sh
+
+      - name: Create ZIP archive
+        run: |
+          cd dist
+          ditto -c -k --keepParent MeetingASR.app MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip
+          shasum -a 256 MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip
+            dist/checksums.txt
+          body: |
+            ## MeetingASR ${{ steps.version.outputs.VERSION }}
+
+            完全本地运行的会议识别工具（macOS 菜单栏应用）
+
+            ### 系统要求
+            - Apple Silicon Mac (arm64)
+            - macOS 14.2 或更新版本
+            - 约 1 GB 磁盘空间
+
+            ### 安装方法
+            1. 下载 `MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip`
+            2. 解压并拖到应用程序文件夹
+            3. 首次打开可能需要在"系统设置 › 隐私与安全性"中允许运行
+
+            ### 注意事项
+            此版本使用 ad-hoc 签名。如需 Developer ID 签名和公证版本，请查看项目 README 中的构建说明。
+
+            ---
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
+          draft: false
+          prerelease: false
