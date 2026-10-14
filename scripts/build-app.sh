@@ -13,7 +13,8 @@ IDENTITY="${SIGN_IDENTITY:--}"
 APP="$ROOT/dist/MeetingASR.app"
 
 scripts/fetch-sherpa-onnx.sh
-scripts/fetch-models.sh
+# 模型由 App 首次启动时下载，不打包到 App 内
+# scripts/fetch-models.sh
 
 swift build -c release --arch arm64 --product MeetingASR
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/MeetingASR"
@@ -22,7 +23,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/MeetingASR"
 cp App/Info.plist "$APP/Contents/Info.plist"
-cp -R Resources/models "$APP/Contents/Resources/models"
+# 模型不打包：用户首次启动时下载到 ~/Library/Application Support/MeetingASR/models
+# cp -R Resources/models "$APP/Contents/Resources/models"
 cp -a Vendor/sherpa-onnx/lib/*.dylib "$APP/Contents/Frameworks/"
 
 # 依赖统一从 @rpath 加载

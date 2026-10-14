@@ -7,6 +7,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBar: StatusBarController!
     private var onboardingWindow: NSWindow?
+    private var modelDownloadWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -16,7 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Notifier.shared.onOpenMeeting = { [weak self] name in self?.statusBar.showPreview(name) }
         state.registerHotkeys()
 
-        if !state.settings.onboardingDone {
+        // 首先检查模型是否存在
+        if !ModelDownloader.modelsExist() {
+            showModelDownload()
+        } else if !state.settings.onboardingDone {
             showOnboarding()
         } else {
             promptUnfinished()
@@ -29,6 +33,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppState.shared.stop()
         }
         return .terminateNow
+    }
+
+    private func showModelDownload() {
+        let view = ModelDownloadView()
+        let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "下载 AI 模型"
+        w.contentViewController = NSHostingController(rootView: view)
+        w.isReleasedWhenClosed = false
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        modelDownloadWindow = w
+        NSApp.activate(ignoringOtherApps: true)
+
+        // 监听下载完成，继续 onboarding 流程
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: w,
+            queue: .main
+        ) { [weak self] _ in
+            self?.modelDownloadWindow = nil
+            // 模型下载完成后继续引导流程
+            if ModelDownloader.modelsExist() {
+                if !AppState.shared.settings.onboardingDone {
+                    self?.showOnboarding()
+                } else {
+                    self?.promptUnfinished()
+                }
+            }
+        }
     }
 
     private func showOnboarding() {

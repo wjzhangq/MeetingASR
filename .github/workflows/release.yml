@@ -18,6 +18,15 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Download and package models
+        run: |
+          mkdir -p dist
+          scripts/fetch-models.sh
+          cd Resources
+          tar -cjf ../dist/meetingasr-models.tar.bz2 models/
+          cd ..
+          shasum -a 256 dist/meetingasr-models.tar.bz2 > dist/models-checksum.txt
+
       - name: Build and package app
         env:
           SIGN_IDENTITY: "-"  # Ad-hoc signing for GitHub releases
@@ -27,31 +36,41 @@ jobs:
         run: |
           cd dist
           ditto -c -k --keepParent MeetingASR.app MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip
-          shasum -a 256 MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip > checksums.txt
+          shasum -a 256 MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip >> checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip
+            dist/meetingasr-models.tar.bz2
+            dist/models-checksum.txt
             dist/checksums.txt
           body: |
             ## MeetingASR ${{ steps.version.outputs.VERSION }}
 
             完全本地运行的会议识别工具（macOS 菜单栏应用）
 
+            ### 下载文件
+            - **MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip** (~5 MB) - 应用程序
+            - **meetingasr-models.tar.bz2** (~550 MB) - AI 模型（首次启动时自动下载）
+
             ### 系统要求
             - Apple Silicon Mac (arm64)
             - macOS 14.2 或更新版本
-            - 约 1 GB 磁盘空间
+            - 约 600 MB 磁盘空间（App + 模型）
 
             ### 安装方法
             1. 下载 `MeetingASR-${{ steps.version.outputs.VERSION }}-macos-arm64.zip`
             2. 解压并拖到应用程序文件夹
-            3. 首次打开可能需要在"系统设置 › 隐私与安全性"中允许运行
+            3. 首次打开时会自动下载 AI 模型（约 550 MB）
+            4. 可能需要在"系统设置 › 隐私与安全性"中允许运行
 
             ### 注意事项
-            此版本使用 ad-hoc 签名。如需 Developer ID 签名和公证版本，请查看项目 README 中的构建说明。
+            - 此版本使用 ad-hoc 签名
+            - 首次启动需要网络连接以下载模型
+            - 模型下载到 `~/Library/Application Support/MeetingASR/models/`
+            - 如需 Developer ID 签名和公证版本，请查看项目 README
 
             ---
 

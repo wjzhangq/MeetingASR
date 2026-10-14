@@ -39,11 +39,15 @@ public struct ModelPaths: Sendable {
 
     public var hasPunctuation: Bool { FileManager.default.fileExists(atPath: punctuation.path) }
 
-    /// 查找顺序：环境变量 MEETINGASR_MODELS → App 包内 Resources/models → 可执行文件旁的 Resources/models → 当前目录。
+    /// 查找顺序：环境变量 MEETINGASR_MODELS → ~/Library/Application Support/MeetingASR/models → App 包内 Resources/models → 可执行文件旁的 Resources/models → 当前目录。
     public static func locate() -> ModelPaths? {
         var candidates: [URL] = []
         if let env = ProcessInfo.processInfo.environment["MEETINGASR_MODELS"] {
             candidates.append(URL(fileURLWithPath: env))
+        }
+        // 用户数据目录（App 首次启动时下载到此）
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            candidates.append(appSupport.appendingPathComponent("MeetingASR/models"))
         }
         if let res = Bundle.main.resourceURL {
             candidates.append(res.appendingPathComponent("models"))
@@ -56,5 +60,13 @@ public struct ModelPaths: Sendable {
             if (try? p.validate()) != nil { return p }
         }
         return nil
+    }
+
+    /// 用户数据目录中的模型路径（App 首次启动时下载到此）。
+    public static var userModelsDirectory: URL? {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return appSupport.appendingPathComponent("MeetingASR/models")
     }
 }
