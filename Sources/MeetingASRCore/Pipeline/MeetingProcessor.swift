@@ -80,7 +80,7 @@ public final class MeetingProcessor {
             return t
         } catch {
             let isCancel = error is CancellationError || cancel.isCancelled
-            try? store.updateMeta(meeting) {
+            _ = try? store.updateMeta(meeting) {
                 $0.status = isCancel ? .cancelled : .failed
                 $0.error = isCancel ? nil : String(describing: error)
                 $0.processingFinishedAt = Date()
@@ -111,6 +111,7 @@ public final class MeetingProcessor {
             try cancel.check()
             let base = Double(ti) / Double(tracks.count)
             let span = 1 / Double(tracks.count)
+            progress(.at(.diarization, base))
             let samples = track.reader.readAllMono()
             let raw: [RawSpan]
             if twoTrack && track.kind == .mic {

@@ -73,8 +73,10 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public var clipMaxSec: Double = 8
     /// 每个人物的样本上限
     public var maxSamplesPerPerson: Int = 20
-    /// 推理线程数
-    public var numThreads: Int = 4
+    /// 推理线程数（默认按 CPU 核数，2~8）
+    public var numThreads: Int = RecognitionSettings.defaultThreads
+
+    public static var defaultThreads: Int { min(8, max(2, ProcessInfo.processInfo.activeProcessorCount)) }
 
     public init() {}
 }
