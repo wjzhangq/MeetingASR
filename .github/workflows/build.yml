@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch sherpa-onnx
+        run: scripts/fetch-sherpa-onnx.sh
+      - name: Build app and CLI
+        run: swift build -c release --arch arm64
+      - name: Unit tests
+        run: swift test
+
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch sherpa-onnx
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl bzip2 >/dev/null
+          scripts/fetch-sherpa-onnx.sh
+      - name: Build and test
+        run: swift test

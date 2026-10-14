@@ -4,9 +4,18 @@ import PackageDescription
 // sherpa-onnx 预编译库由 scripts/fetch-sherpa-onnx.sh 下载到 Vendor/sherpa-onnx/{include,lib}。
 let vendorLib = "Vendor/sherpa-onnx/lib"
 
+// rpath：.app 内为 Contents/Frameworks；开发时可执行文件位于 .build/<triple>/<config>/，指回 Vendor。
 let sherpaLinker: [LinkerSetting] = [
-    .unsafeFlags(["-L\(vendorLib)", "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"], .when(platforms: [.macOS])),
-    .unsafeFlags(["-L\(vendorLib)", "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../lib"], .when(platforms: [.linux])),
+    .unsafeFlags([
+        "-L\(vendorLib)",
+        "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
+        "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../../../\(vendorLib)",
+    ], .when(platforms: [.macOS])),
+    .unsafeFlags([
+        "-L\(vendorLib)",
+        "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../lib",
+        "-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/../../../\(vendorLib)",
+    ], .when(platforms: [.linux])),
 ]
 
 var products: [Product] = [
@@ -60,7 +69,7 @@ targets.append(
 
 let package = Package(
     name: "MeetingASR",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("14.2")], // Core Audio Process Tap 需要 14.2
     products: products,
     targets: targets
 )
