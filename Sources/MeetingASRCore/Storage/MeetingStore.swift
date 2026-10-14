@@ -73,4 +73,29 @@ public struct MeetingStore: Sendable {
             !excluding.contains(s.paths.name) && s.status != .done && s.paths.hasRawAudio
         }
     }
+
+    /// 异常退出时仍处于"录音中"的会议：根据已写入的音频修正时长并转为待识别。
+    /// 返回修正后的 meta；不需要修正时返回 nil。
+    @discardableResult
+    public func recoverInterruptedRecording(_ m: MeetingPaths) throws -> MeetingMeta? {
+        var meta = try loadMeta(m)
+        guard meta.status == .recording else { return nil }
+        var duration = 0.0
+        var tracks: [TrackInfo] = []
+        for t in meta.tracks {
+            let url = m.dir.appendingPathComponent(t.file)
+            guard let r = try? WavReader(url: url), r.frameCount > 0 else { continue }
+            duration = max(duration, r.durationSec)
+            tracks.append(t)
+        }
+        meta.tracks = tracks
+        meta.durationSec = duration
+        if let i = meta.pauses.indices.last, meta.pauses[i].resumedAt == nil {
+            meta.pauses.remove(at: i)
+        }
+        meta.status = tracks.isEmpty ? .failed : .pending
+        if tracks.isEmpty { meta.error = "录音中断且没有可用音频" }
+        try saveMeta(meta, m)
+        return meta
+    }
 }
