@@ -40,8 +40,7 @@ var targets: [Target] = [
     .executableTarget(
         name: "meetingasr-cli",
         dependencies: ["MeetingASRCore", "MeetingASREngine"],
-        path: "Sources/meetingasr-cli",
-        linkerSettings: sherpaLinker
+        path: "Sources/meetingasr-cli"
     ),
     .testTarget(
         name: "MeetingASRCoreTests",
@@ -57,7 +56,7 @@ targets.append(
         name: "MeetingASRApp",
         dependencies: ["MeetingASRCore", "MeetingASREngine"],
         path: "Sources/MeetingASRApp",
-        linkerSettings: sherpaLinker + [
+        linkerSettings: [
             .linkedFramework("CoreAudio"),
             .linkedFramework("AVFoundation"),
             .linkedFramework("ServiceManagement"),
