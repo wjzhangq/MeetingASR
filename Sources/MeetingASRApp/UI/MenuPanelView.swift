@@ -14,6 +14,12 @@ final class PanelRouter: ObservableObject {
     @Published var route: Route = .menu
     private var models: [String: PreviewModel] = [:]
 
+    /// 会议被删除：丢弃缓存的预览，正在预览时回到菜单
+    func forget(_ name: String) {
+        models[name] = nil
+        if route == .preview(name) { route = .menu }
+    }
+
     func previewModel(_ name: String) -> PreviewModel {
         if let m = models[name] {
             m.reload()
@@ -30,6 +36,8 @@ struct MenuPanelView: View {
     @ObservedObject var state: AppState
     @ObservedObject var router: PanelRouter
     var actions: PanelActions
+    @State private var renaming: MeetingTarget?
+    @State private var deleting: MeetingTarget?
 
     var body: some View {
         Group {
@@ -174,8 +182,18 @@ struct MenuPanelView: View {
                     .padding(.horizontal, 8)
                 }
                 .buttonStyle(HoverButtonStyle())
+                .contextMenu {
+                    let busy = state.isBusy(m.paths.name)
+                    Button("重命名…") { renaming = MeetingTarget(name: m.paths.name, title: m.title) }.disabled(busy)
+                    Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([m.paths.dir]) }
+                    Divider()
+                    Button("删除…", role: .destructive) { deleting = MeetingTarget(name: m.paths.name, title: m.title) }.disabled(busy)
+                }
             }
+            Text("右键会议可重命名或删除").font(.caption2).foregroundStyle(.tertiary).padding(.horizontal, 8).padding(.top, 2)
+                .opacity(state.recent.isEmpty ? 0 : 1)
         }
+        .meetingManageAlerts(renaming: $renaming, deleting: $deleting)
     }
 
     @ViewBuilder

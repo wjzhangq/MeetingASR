@@ -72,6 +72,34 @@ final class StorageTests: XCTestCase {
         XCTAssertEqual(Int(loaded.createdAt.timeIntervalSince1970), 1_700_001_100)
     }
 
+    func testRenameAndDeleteMeeting() throws {
+        let layout = try makeTempLayout()
+        let store = MeetingStore(layout: layout)
+        let m = layout.meeting(named: layout.newMeetingName(date: Date(), title: "周会"))
+        var meta = MeetingMeta(title: "周会", createdAt: Date(), source: .recording)
+        meta.status = .done
+        try store.saveMeta(meta, m)
+        let t = Transcript(title: "周会", createdAt: "2026-10-14T14:30:00+08:00", durationSec: 10,
+                           speakers: [TranscriptSpeaker(id: "S1", track: .mic)],
+                           segments: [TranscriptSegment(speaker: "S1", start: 1, end: 2, text: "你好。")])
+        try TranscriptWriter.writeAll(t, to: m)
+
+        XCTAssertEqual(try store.rename(m, title: "  产品评审 "), "产品评审")
+        XCTAssertEqual(try store.loadMeta(m).title, "产品评审")
+        XCTAssertEqual(try store.loadTranscript(m).title, "产品评审")
+        XCTAssertTrue(try String(contentsOf: m.transcriptMarkdown, encoding: .utf8).hasPrefix("# 产品评审"))
+        // 目录名不变
+        XCTAssertTrue(FileManager.default.fileExists(atPath: m.dir.path))
+        XCTAssertEqual(store.allMeetings().map(\.title), ["产品评审"])
+        XCTAssertEqual(try store.rename(m, title: " "), "会议")
+
+        try store.delete(m)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: m.dir.path))
+        XCTAssertTrue(store.allMeetings().isEmpty)
+        // 不允许删除会议目录之外的路径
+        XCTAssertThrowsError(try store.delete(layout.meeting(named: "..")))
+    }
+
     func testSettingsBackwardCompatibleDecode() throws {
         let json = #"{"captureSource":"micOnly","recognition":{"matchThreshold":0.7}}"#
         let s = try JSONIO.makeDecoder().decode(AppSettings.self, from: Data(json.utf8))

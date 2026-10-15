@@ -41,6 +41,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             drop.autoresizingMask = [.width, .height]
             button.addSubview(drop)
         }
+        state.onMeetingDeleted = { [weak self] name in
+            self?.router.forget(name)
+            self?.windows[name]?.close()
+        }
+        state.onMeetingRenamed = { [weak self] name, title in
+            self?.windows[name]?.title = title
+        }
         state.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in DispatchQueue.main.async { self?.updateButton() } }

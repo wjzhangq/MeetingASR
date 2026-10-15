@@ -43,6 +43,33 @@ public struct MeetingStore: Sendable {
         try JSONIO.read(SpeakersFile.self, from: m.speakersJSON)
     }
 
+    /// 修改会议标题：同步更新 meta 与已有的 transcript.json / md / srt。
+    /// 目录名不变，人物库样本中的来源会议引用保持有效。空标题时使用“会议”。
+    @discardableResult
+    public func rename(_ m: MeetingPaths, title: String) throws -> String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTitle = t.isEmpty ? "会议" : t
+        try updateMeta(m) { $0.title = newTitle }
+        if var transcript = try? loadTranscript(m), transcript.title != newTitle {
+            transcript.title = newTitle
+            try TranscriptWriter.writeAll(transcript, to: m)
+        }
+        return newTitle
+    }
+
+    /// 删除会议：整个会议目录（原始音频、结果、特征片段）直接删除，不进废纸篓。
+    /// 人物库中已入库的样本与代表片段单独保存，不受影响。
+    public func delete(_ m: MeetingPaths) throws {
+        let dir = m.dir.standardizedFileURL
+        // 只允许删除会议目录下的直接子目录
+        guard dir.deletingLastPathComponent().path == layout.meetingsDir.standardizedFileURL.path,
+              !m.name.isEmpty, !m.name.hasPrefix(".") else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        guard FileManager.default.fileExists(atPath: dir.path) else { return }
+        try FileManager.default.removeItem(at: dir)
+    }
+
     /// 所有会议，按创建时间倒序。
     public func allMeetings() -> [MeetingSummary] {
         let fm = FileManager.default

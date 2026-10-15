@@ -12,6 +12,10 @@ struct PreviewView: View {
     @ObservedObject var model: PreviewModel
     var onBack: (() -> Void)?
     var onOpenWindow: (() -> Void)?
+    @State private var renaming: MeetingTarget?
+    @State private var deleting: MeetingTarget?
+
+    private var target: MeetingTarget { MeetingTarget(name: model.meeting.name, title: model.title) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +38,7 @@ struct PreviewView: View {
             }
         }
         .onDisappear { model.stopPlayback() }
+        .meetingManageAlerts(renaming: $renaming, deleting: $deleting, onRenamed: { model.reload() })
     }
 
     private var header: some View {
@@ -66,6 +71,14 @@ struct PreviewView: View {
             }
             Button { model.revealInFinder() } label: { Image(systemName: "folder") }
                 .buttonStyle(.borderless).help("在 Finder 中显示")
+            Menu {
+                Button("重命名…") { renaming = target }
+                Divider()
+                Button("删除会议…", role: .destructive) { model.stopPlayback(); deleting = target }
+            } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .disabled(AppState.shared.isBusy(model.meeting.name))
+                .help("重命名或删除会议")
             if let onOpenWindow {
                 Button(action: onOpenWindow) { Image(systemName: "macwindow") }
                     .buttonStyle(.borderless).help("在独立窗口打开")
