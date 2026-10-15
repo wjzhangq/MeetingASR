@@ -15,7 +15,13 @@ public struct RecognitionResult: Sendable {
 /// 离线语音识别（Paraformer-zh）。输入 16kHz 单声道。
 public protocol SpeechRecognizer: AnyObject {
     var modelName: String { get }
+    /// 是否输出字级时间戳（“先识别再分配说话人”需要）
+    var providesTimestamps: Bool { get }
     func recognize(_ samples: [Float]) -> RecognitionResult
+}
+
+extension SpeechRecognizer {
+    public var providesTimestamps: Bool { true }
 }
 
 /// 标点恢复。

@@ -106,6 +106,10 @@ public final class MeetingProcessor {
         // 2. 说话人分离（4.3）
         let twoTrack = tracks.contains { $0.kind == .mic } && tracks.contains { $0.kind == .system }
         var perTrack: [[ASRSegment]] = []
+        // 先识别再分配说话人：需要模型输出字级时间戳
+        let asrFirst = rec.recognitionMode == .asrFirst && engines.recognizer.providesTimestamps
+        /// 各音轨的 VAD 语音区间（会议时间轴），供长句切块
+        var vadByTrack: [TrackKind: [ClosedRange<Double>]] = [:]
         let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
         let candidates = people.people.filter { !$0.samples.isEmpty }
         let identifyPerson: SpeakerClusterMerger.Identify? = candidates.isEmpty ? nil : { emb in
@@ -119,9 +123,11 @@ public final class MeetingProcessor {
             progress(.at(.diarization, base))
             let samples = track.reader.readAllMono()
             let raw: [RawSpan]
+            let vad = (asrFirst || (twoTrack && track.kind == .mic)) ? engines.vad.detect(samples) : []
+            vadByTrack[track.kind] = vad.map { ($0.lowerBound + track.offset)...($0.upperBound + track.offset) }
             if twoTrack && track.kind == .mic {
                 // 线上会议麦克风轨：整轨一个说话人，只做 VAD 切段
-                raw = engines.vad.detect(samples).map { RawSpan(speaker: "mic", start: $0.lowerBound, end: $0.upperBound) }
+                raw = vad.map { RawSpan(speaker: "mic", start: $0.lowerBound, end: $0.upperBound) }
             } else {
                 var n = meta.expectedSpeakers ?? rec.defaultSpeakerCount
                 if twoTrack, let k = n { n = max(1, k - 1) } // 预计人数含本人
@@ -165,21 +171,51 @@ public final class MeetingProcessor {
         let corrector = HotwordCorrector(hotwords: hotwords)
         let acronyms = AcronymNormalizer(extra: hotwords.words)
         var pieces: [RecognizedPiece] = []
-        let asrSegs = segments.filter { !$0.isEcho }
-        for (i, seg) in asrSegs.enumerated() {
-            try cancel.check()
-            guard let track = tracks.first(where: { $0.kind == seg.track }) else { continue }
-            let audio = read(track, seg.cropStart, seg.cropEnd)
-            let r = engines.recognizer.recognize(audio)
-            let text = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                let tokens = r.tokens.map { TranscriptToken(t: $0.t, start: $0.start + seg.cropStart) }
-                pieces.append(RecognizedPiece(speaker: seg.speaker, track: seg.track, start: seg.start, end: seg.end, text: text, tokens: tokens))
+        if asrFirst {
+            // 先按长句识别，再按字级时间戳分配说话人（重叠语音只识别一次）
+            let chunker = AsrChunker()
+            var jobs: [(PreparedTrack, [AsrChunk])] = []
+            for track in tracks {
+                let spans = segments.filter { $0.track == track.kind }
+                guard spans.contains(where: { !$0.isEcho }) else { continue }
+                let vad = vadByTrack[track.kind] ?? []
+                let speech = vad + spans.filter { !$0.isEcho }.map { $0.start...$0.end }
+                let silences = zip(vad, vad.dropFirst()).map { ($0.upperBound + $1.lowerBound) / 2 }
+                jobs.append((track, chunker.chunks(speech: speech, silences: silences, total: track.offset + track.reader.durationSec)))
             }
-            progress(.at(.recognition, Double(i + 1) / Double(max(1, asrSegs.count))))
+            let total = max(1, jobs.reduce(0) { $0 + $1.1.count })
+            var done = 0
+            let assigner = SpeakerAssigner()
+            for (track, chunks) in jobs {
+                var tokens: [TimedToken] = []
+                for c in chunks {
+                    try cancel.check()
+                    let r = engines.recognizer.recognize(read(track, c.cropStart, c.cropEnd))
+                    let abs = r.tokens.map { TranscriptToken(t: $0.t, start: $0.start + c.cropStart) }
+                    tokens += TimedToken.from(abs, chunkEnd: c.cropEnd)
+                    done += 1
+                    progress(.at(.recognition, Double(done) / Double(total)))
+                }
+                pieces += assigner.assign(tokens, spans: segments.filter { $0.track == track.kind }, track: track.kind)
+            }
+            pieces.sort { ($0.start, $0.end) < ($1.start, $1.end) }
+        } else {
+            let asrSegs = segments.filter { !$0.isEcho }
+            for (i, seg) in asrSegs.enumerated() {
+                try cancel.check()
+                guard let track = tracks.first(where: { $0.kind == seg.track }) else { continue }
+                let audio = read(track, seg.cropStart, seg.cropEnd)
+                let r = engines.recognizer.recognize(audio)
+                let text = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    let tokens = r.tokens.map { TranscriptToken(t: $0.t, start: $0.start + seg.cropStart) }
+                    pieces.append(RecognizedPiece(speaker: seg.speaker, track: seg.track, start: seg.start, end: seg.end, text: text, tokens: tokens))
+                }
+                progress(.at(.recognition, Double(i + 1) / Double(max(1, asrSegs.count))))
+            }
+            // 重叠段只保留一份内容
+            pieces = OverlapDeduplicator.dedupe(pieces)
         }
-        // 重叠段只保留一份内容
-        pieces = OverlapDeduplicator.dedupe(pieces)
 
         // 热词纠错 → 缩写规范 → 标点
         let out: [TranscriptSegment] = pieces.map { pc in

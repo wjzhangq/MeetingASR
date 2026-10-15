@@ -14,10 +14,20 @@ private func dominantBand(_ x: [Float]) -> Int {
 private final class MockASR: SpeechRecognizer {
     var modelName = "mock-asr"
     var calls = 0
+    /// 有声部分每 0.25 秒输出一个字（循环"新图平台"），带字级时间戳
     func recognize(_ samples: [Float]) -> RecognitionResult {
         calls += 1
-        guard SignalStats.rms(samples) > 0.01 else { return RecognitionResult(text: "") }
-        return RecognitionResult(text: "新图平台第\(calls)句", tokens: "新图平台".enumerated().map { TranscriptToken(t: String($1), start: 0.1 * Double($0 + 1)) })
+        let chars = Array("新图平台")
+        let frame = 4000
+        var tokens: [TranscriptToken] = []
+        var i = 0
+        while i + frame <= samples.count {
+            if SignalStats.rms(Array(samples[i..<(i + frame)])) > 0.01 {
+                tokens.append(TranscriptToken(t: String(chars[tokens.count % chars.count]), start: Double(i) / 16_000 + 0.1))
+            }
+            i += frame
+        }
+        return RecognitionResult(text: tokens.map(\.t).joined(), tokens: tokens)
     }
 }
 
@@ -129,9 +139,18 @@ final class PipelineTests: XCTestCase {
     }
 
     func testFullPipelineTwoTracksThenAutoMatch() throws {
+        try runFullPipeline(mode: .asrFirst)
+    }
+
+    func testFullPipelineSegmentMode() throws {
+        try runFullPipeline(mode: .segment)
+    }
+
+    func runFullPipeline(mode: RecognitionMode) throws {
         let store = MeetingStore(layout: layout)
         let people = PeopleStore(layout: layout)
         var opts = ProcessingOptions()
+        opts.recognition.recognitionMode = mode
         opts.hotwords = HotwordList(words: ["星图平台"])
         let proc = MeetingProcessor(engines: engines(), store: store, people: people, options: opts)
 
@@ -201,12 +220,22 @@ final class PipelineTests: XCTestCase {
     }
 
     func testSingleTrackFileWithRangeAndExpectedSpeakers() throws {
+        try runSingleTrack(mode: .asrFirst)
+    }
+
+    func testSingleTrackFileSegmentMode() throws {
+        try runSingleTrack(mode: .segment)
+    }
+
+    func runSingleTrack(mode: RecognitionMode) throws {
         let src = layout.root.appendingPathComponent("input/访谈.wav")
         try WavWriter.writeMono(track(rate: 16_000, seconds: 30, parts: [(0, 8, 250), (9, 15, 450), (16, 29, 250)]), sampleRate: 16_000, to: src)
         let m = try MeetingFactory.createFileMeeting(source: src, range: 5...20, expectedSpeakers: 2, layout: layout)
         XCTAssertTrue(m.name.hasSuffix("_访谈"))
         let e = engines()
-        let proc = MeetingProcessor(engines: e, store: MeetingStore(layout: layout), people: PeopleStore(layout: layout), options: ProcessingOptions())
+        var opts = ProcessingOptions()
+        opts.recognition.recognitionMode = mode
+        let proc = MeetingProcessor(engines: e, store: MeetingStore(layout: layout), people: PeopleStore(layout: layout), options: opts)
         let t = try proc.process(m)
         XCTAssertEqual((e.diarizer as! MockDiarizer).lastOptions?.numSpeakers, 2)
         XCTAssertEqual(t.durationSec, 15, accuracy: 0.01)

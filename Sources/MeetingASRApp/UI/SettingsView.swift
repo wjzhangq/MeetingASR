@@ -184,6 +184,12 @@ private struct RecognitionSettingsView: View {
 
     var body: some View {
         Form {
+            Section("识别方式") {
+                Picker("方式", selection: binding(\.recognitionMode)) {
+                    ForEach(RecognitionMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                Text("先识别再分配说话人：按长句识别，上下文更完整，重叠语音不会重复。模型不输出字级时间戳时自动按段识别。").font(.caption).foregroundStyle(.secondary)
+            }
             Section("说话人数") {
                 Picker("默认", selection: Binding(get: { state.settings.recognition.defaultSpeakerCount ?? 0 }, set: { state.settings.recognition.defaultSpeakerCount = $0 == 0 ? nil : $0; state.saveSettings() })) {
                     Text("自动").tag(0)
