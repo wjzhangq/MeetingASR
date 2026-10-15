@@ -158,21 +158,32 @@ public final class MeetingProcessor {
             } else {
                 var n = meta.expectedSpeakers ?? rec.defaultSpeakerCount
                 if twoTrack, let k = n { n = max(1, k - 1) } // 预计人数含本人
-                // 长音频分块分离：每块独立聚类，块之间更新进度、可取消
-                let blocks = BlockPlanner.blocks(samples, sampleRate: Self.sr, config: options.blockDiarization)
+                // 长音频分块分离：每块独立聚类，块之间更新进度、可取消。
+                // 录音期间已分离的块（LiveDiarizer）直接复用，只分离剩余部分
+                let blockCfg = options.blockDiarization
+                let cacheKey = DiarizationCache.Key(track: track.kind, recognition: rec, config: blockCfg, models: engines.models)
+                let cache = meta.source == .recording ? DiarizationCache.load(meeting, track: track.kind) : nil
+                let cached = cache?.usableBlocks(
+                    key: cacheKey, totalSamples: samples.count, minTail: Int(blockCfg.blockSec * Double(Self.sr)) / 2) ?? []
+                let blocks = BlockPlanner.blocks(samples, sampleRate: Self.sr, config: blockCfg, from: cached.last?.end ?? 0)
+                let multiBlock = cached.count + blocks.count > 1
                 let diarEnd = 0.92
-                let w = (diarEnd - vadShare) / Double(blocks.count)
+                let w = (diarEnd - vadShare) / Double(max(1, blocks.count))
                 var spans: [RawSpan] = []
-                for (bi, b) in blocks.enumerated() {
+                for (bi, b) in cached.enumerated() {
+                    spans += b.spans.map { RawSpan(speaker: "\(track.kind.rawValue)-\(bi)-\($0.speaker)", start: $0.start, end: $0.end) }
+                }
+                for (j, b) in blocks.enumerated() {
                     try cancel.check()
+                    let bi = cached.count + j
                     // 分块时各块人数未知（某块可能只有部分人发言），跨块关联后再按指定人数合并
-                    let opts = DiarizationOptions(numSpeakers: blocks.count > 1 ? nil : n, threshold: rec.clusterThreshold,
+                    let opts = DiarizationOptions(numSpeakers: multiBlock ? nil : n, threshold: rec.clusterThreshold,
                                                   minDurationOn: rec.minDurationOn, minDurationOff: rec.minDurationOff)
                     let off = Double(b.lowerBound) / Double(Self.sr)
-                    let part = blocks.count > 1 ? Array(samples[b]) : samples
+                    let part = multiBlock ? Array(samples[b]) : samples
                     let partSec = Double(part.count) / Double(Self.sr)
                     // 切分阶段（无回调）→ 声纹阶段（有回调）→ 聚类（无回调）
-                    let b0 = vadShare + Double(bi) * w
+                    let b0 = vadShare + Double(j) * w
                     let seg = diarTiming.segShare
                     let t0 = Date()
                     var firstCallback: Date?
@@ -190,7 +201,7 @@ public final class MeetingProcessor {
                 // 跨块关联与簇合并：按簇提取声纹，无回调，按预计用时推进
                 ticker.estimate(from: diarEnd, to: 0.99, expectedSeconds: max(1, 0.004 * audioSec))
                 let embed: (Double, Double) -> [Float]? = { s, e in self.engines.embedder.embed(Self.slice(samples, s, e)) }
-                if blocks.count > 1 {
+                if multiBlock {
                     // 跨块统一说话人编号
                     let merger = SpeakerClusterMerger(config: rec.clusterMerge)
                     let items = merger.clusterStats(spans, embed: embed).map { c in

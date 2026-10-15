@@ -203,6 +203,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var meetingDetection: Bool = true
     /// 会议结束（会议软件停止通话）时自动停止录音并识别
     public var autoStopOnMeetingEnd: Bool = true
+    /// 录音期间在后台提前做说话人分离（每 5 分钟一块），停止后只需处理最后一段
+    public var liveDiarization: Bool = true
 
     public init() {}
 
@@ -238,6 +240,7 @@ extension AppSettings {
         onboardingDone = try c.decodeIfPresent(Bool.self, forKey: .onboardingDone) ?? onboardingDone
         meetingDetection = try c.decodeIfPresent(Bool.self, forKey: .meetingDetection) ?? meetingDetection
         autoStopOnMeetingEnd = try c.decodeIfPresent(Bool.self, forKey: .autoStopOnMeetingEnd) ?? autoStopOnMeetingEnd
+        liveDiarization = try c.decodeIfPresent(Bool.self, forKey: .liveDiarization) ?? liveDiarization
     }
 }
 

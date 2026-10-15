@@ -134,7 +134,7 @@ private struct CaptureSettings: View {
             Section("会议检测") {
                 Toggle("会议软件开始通话时提示是否录音", isOn: Binding(get: { state.settings.meetingDetection }, set: { state.settings.meetingDetection = $0; state.saveSettings() }))
                 Toggle("会议结束时自动停止录音并识别", isOn: Binding(get: { state.settings.autoStopOnMeetingEnd }, set: { state.settings.autoStopOnMeetingEnd = $0; state.saveSettings() }))
-                Text("按下方已启用的会议软件检测：持续占用麦克风 5 秒视为会议开始，停止通话（不再采集也不再播放声音）15 秒视为会议结束。只会自动停止检测到会议的录音。").font(.caption).foregroundStyle(.secondary)
+                Text("按下方已启用的会议软件检测：持续占用麦克风 5 秒视为会议开始，停止通话（不再采集也不再播放声音）15 秒视为会议结束。只会自动停止检测到会议的录音。提示出现在屏幕右上角：回车或“开始 / 停止”快捷键确认，Esc 关闭，5 秒无操作自动关闭。").font(.caption).foregroundStyle(.secondary)
             }
             Section("会议软件（按 Bundle ID 匹配，含子进程）") {
                 ForEach(state.settings.captureApps) { app in
@@ -229,6 +229,10 @@ private struct RecognitionSettingsView: View {
                     ForEach(RecognitionMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 Text("先识别再分配说话人：按长句识别，上下文更完整，重叠语音不会重复。模型不输出字级时间戳时自动按段识别。").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("录音时分离") {
+                Toggle("录音期间在后台提前做说话人分离", isOn: Binding(get: { state.settings.liveDiarization }, set: { state.settings.liveDiarization = $0; state.saveSettings() }))
+                Text("每录满约 5 分钟就在后台（低优先级、2 线程）分离这一段，停止录音后只需处理最后不足 5 分钟的部分，长会议出结果快很多。录音期间会占用一些 CPU。从下一次录音生效。").font(.caption).foregroundStyle(.secondary)
             }
             Section("说话人数") {
                 Picker("默认", selection: Binding(get: { state.settings.recognition.defaultSpeakerCount ?? 0 }, set: { state.settings.recognition.defaultSpeakerCount = $0 == 0 ? nil : $0; state.saveSettings() })) {
