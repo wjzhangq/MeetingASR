@@ -193,7 +193,8 @@ public final class MeetingProcessor {
                 for c in chunks {
                     try cancel.check()
                     let r = engines.recognizer.recognize(read(track, c.cropStart, c.cropEnd))
-                    let abs = r.tokens.map { TranscriptToken(t: $0.t, start: $0.start + c.cropStart) }
+                    let abs = r.tokensOrEstimated(start: c.start - c.cropStart, end: c.end - c.cropStart)
+                        .map { TranscriptToken(t: $0.t, start: $0.start + c.cropStart) }
                     tokens += TimedToken.from(abs, chunkEnd: c.cropEnd)
                     done += 1
                     progress(.at(.recognition, Double(done) / Double(total)))

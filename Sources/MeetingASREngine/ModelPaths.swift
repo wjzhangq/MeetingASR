@@ -39,6 +39,21 @@ public struct ModelPaths: Sendable {
 
     public var hasPunctuation: Bool { FileManager.default.fileExists(atPath: punctuation.path) }
 
+    /// 某个 ASR 模型所在目录：先找模型根目录，再找用户模型目录
+    /// （App 包内的模型只读，另外下载的模型放在用户模型目录）。未安装返回 nil。
+    public func asrDirectory(_ kind: AsrModelKind) -> URL? {
+        let roots = [root] + (Self.userModelsDirectory.map { [$0] } ?? [])
+        for r in roots {
+            let dir = r.appendingPathComponent(kind.directory)
+            if kind.requiredFiles.allSatisfy({ FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }) {
+                return dir
+            }
+        }
+        return nil
+    }
+
+    public func hasASR(_ kind: AsrModelKind) -> Bool { asrDirectory(kind) != nil }
+
     /// 查找顺序：环境变量 MEETINGASR_MODELS → ~/Library/Application Support/MeetingASR/models → App 包内 Resources/models → 可执行文件旁的 Resources/models → 当前目录。
     public static func locate() -> ModelPaths? {
         var candidates: [URL] = []

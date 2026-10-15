@@ -5,17 +5,37 @@ import SherpaOnnxC
 
 // sherpa-onnx 适配层：把上游 Swift 封装接到 MeetingASRCore 的引擎协议上。
 
-/// 离线 Paraformer-zh 识别。
+/// 离线识别：Paraformer-zh / FireRedASR2-CTC / FireRedASR-AED。
 public final class SherpaRecognizer: SpeechRecognizer {
-    public let modelName = "sherpa-onnx-paraformer-zh"
+    public let kind: AsrModelKind
+    public var modelName: String { kind.modelName }
+    public var providesTimestamps: Bool { kind.providesTimestamps }
     private let recognizer: SherpaOnnxOfflineRecognizer
 
-    public init(paths: ModelPaths, numThreads: Int) throws {
-        for u in [paths.asrModel, paths.asrTokens] where !FileManager.default.fileExists(atPath: u.path) {
-            throw EngineError.modelMissing(u.path)
+    public init(paths: ModelPaths, kind: AsrModelKind = .paraformer, numThreads: Int) throws {
+        guard let dir = paths.asrDirectory(kind) else {
+            throw EngineError.modelMissing(paths.root.appendingPathComponent(kind.directory).path)
         }
-        let paraformer = sherpaOnnxOfflineParaformerModelConfig(model: paths.asrModel.path)
-        let model = sherpaOnnxOfflineModelConfig(tokens: paths.asrTokens.path, paraformer: paraformer, numThreads: numThreads, provider: "cpu")
+        self.kind = kind
+        let tokens = dir.appendingPathComponent("tokens.txt").path
+        let model: SherpaOnnxOfflineModelConfig
+        switch kind {
+        case .paraformer:
+            model = sherpaOnnxOfflineModelConfig(
+                tokens: tokens,
+                paraformer: sherpaOnnxOfflineParaformerModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path),
+                numThreads: numThreads, provider: "cpu")
+        case .fireRedAsrCtc:
+            model = sherpaOnnxOfflineModelConfig(
+                tokens: tokens, numThreads: numThreads, provider: "cpu",
+                fireRedAsrCtc: sherpaOnnxOfflineFireRedAsrCtcModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path))
+        case .fireRedAsrAed:
+            model = sherpaOnnxOfflineModelConfig(
+                tokens: tokens, numThreads: numThreads, provider: "cpu",
+                fireRedAsr: sherpaOnnxOfflineFireRedAsrModelConfig(
+                    encoder: dir.appendingPathComponent("encoder.int8.onnx").path,
+                    decoder: dir.appendingPathComponent("decoder.int8.onnx").path))
+        }
         var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(sampleRate: 16_000, featureDim: 80), modelConfig: model)
         recognizer = SherpaOnnxOfflineRecognizer(config: &config)
     }
@@ -24,31 +44,16 @@ public final class SherpaRecognizer: SpeechRecognizer {
         guard samples.count >= 1600 else { return RecognitionResult(text: "") }
         let r = recognizer.decode(samples: samples, sampleRate: 16_000)
         let text = r.text
-        var tokens: [TranscriptToken] = []
+        var pieces: [(String, Double)] = []
         let raw = r.result.pointee
         let ts = r.timestamps
         if let arr = raw.tokens_arr, ts.count == Int(raw.count) {
-            var pending: (String, Double)?
             for i in 0..<Int(raw.count) {
                 guard let p = arr[i] else { continue }
-                let piece = String(cString: p)
-                let start = Double(ts[i])
-                // 英文 BPE 片段以 "@@" 结尾，与后续片段拼成一个词
-                if piece.hasSuffix("@@") {
-                    let stem = String(piece.dropLast(2))
-                    pending = pending.map { ($0.0 + stem, $0.1) } ?? (stem, start)
-                    continue
-                }
-                if let pd = pending {
-                    tokens.append(TranscriptToken(t: pd.0 + piece, start: pd.1))
-                    pending = nil
-                } else if !piece.isEmpty, piece != "<unk>" {
-                    tokens.append(TranscriptToken(t: piece, start: start))
-                }
+                pieces.append((String(cString: p), Double(ts[i])))
             }
-            if let pd = pending { tokens.append(TranscriptToken(t: pd.0, start: pd.1)) }
         }
-        return RecognitionResult(text: text, tokens: tokens)
+        return RecognitionResult(text: text, tokens: SubwordMerger.merge(pieces))
     }
 }
 
@@ -204,13 +209,17 @@ public final class SherpaVAD: VoiceActivityDetector {
 
 /// 创建全套引擎。
 public enum SherpaEngineFactory {
-    public static func make(paths: ModelPaths, numThreads: Int = 4) throws -> EngineSet {
+    /// - Parameter asrModel: 所选识别模型；未安装时使用 Paraformer
+    public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer) throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
+        let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
+        let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads)
         var models = ModelVersions.bundled
+        models.asr = recognizer.modelName
         if punct == nil { models.punctuation = nil }
         return EngineSet(
-            recognizer: try SherpaRecognizer(paths: paths, numThreads: numThreads),
+            recognizer: recognizer,
             punctuator: punct,
             diarizer: try SherpaDiarizer(paths: paths, numThreads: numThreads),
             embedder: try SherpaEmbedder(paths: paths, numThreads: numThreads),

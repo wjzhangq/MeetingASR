@@ -67,7 +67,7 @@ final class AppState: ObservableObject {
         queue = ProcessingQueue(makeProcessor: {
             guard let paths = ModelPaths.locate() else { throw EngineError.modelMissing("Contents/Resources/models") }
             let settings = AppSettings.load()
-            let engines = try SherpaEngineFactory.make(paths: paths, numThreads: settings.recognition.numThreads)
+            let engines = try SherpaEngineFactory.make(paths: paths, numThreads: settings.recognition.numThreads, asrModel: settings.recognition.asrModel)
             return MeetingProcessor(engines: engines, store: MeetingStore(layout: layout), people: people,
                                     options: ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load()))
         }) { [weak self] event in
@@ -88,7 +88,12 @@ final class AppState: ObservableObject {
     // MARK: - 设置
 
     func saveSettings() {
+        let before = AppSettings.load().recognition
         do { try settings.save() } catch { lastError = "保存设置失败：\(error)" }
+        // 识别模型或线程数变化：下个任务重新加载模型
+        if before.asrModel != settings.recognition.asrModel || before.numThreads != settings.recognition.numThreads {
+            queue.reloadEngines()
+        }
         people.maxSamplesPerPerson = settings.recognition.maxSamplesPerPerson
         registerHotkeys()
     }

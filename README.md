@@ -228,7 +228,21 @@ App 只在菜单栏显示图标（不出现在 Dock）。首次启动会显示�
 
 **先识别、再分配说话人**：按说话人切出的段往往很短，ASR 缺少上下文，重叠语音还会被两个说话人各识别一次。默认改为按音轨把语音组合成 10~25 秒的长句块识别，再按字级时间戳把每个字分给当时说话的人（重叠处延续上一个字的说话人，夹在同一人中间的 1~2 个字视为边界抖动），落在回声段内的字丢弃。模型不输出字级时间戳时自动退回按段识别（设置 › 识别 中可切换）。
 
-**热词**：sherpa-onnx 的热词（contextual biasing）不支持离线 Paraformer，因此采用后处理纠错——中文热词按拼音近似匹配同长度片段（三字以上允许一个模糊音：平翘舌、n/l、h/f、r/l、前后鼻音），英文热词忽略大小写规范写法。人物库中的姓名自动加入热词。
+**热词**：sherpa-onnx 的热词（contextual biasing）不支持离线 Paraformer / FireRedASR，因此采用后处理纠错——中文热词按拼音近似匹配同长度片段（三字以上允许一个模糊音：平翘舌、n/l、h/f、r/l、前后鼻音），英文热词忽略大小写规范写法。人物库中的姓名自动加入热词。
+
+---
+
+### 识别模型：FireRedASR（可选）
+
+默认使用 Paraformer-zh。对中英混说、技术术语要求更高时，可在 设置 › 识别 › 识别模型 中选择 FireRedASR 并点击“下载安装”（从 sherpa-onnx 发布页下载到 `~/Library/Application Support/MeetingASR/models/`），从下一次识别生效：
+
+| 模型 | 目录 | 字级时间戳 | 说明 |
+|---|---|---|---|
+| Paraformer-zh | `asr/` | 有 | 默认，随 App 下载 |
+| FireRedASR2-CTC 中英 | `asr-firered-ctc/`（model.int8.onnx、tokens.txt） | 有 | 推荐的升级选项，支持“先识别再分配说话人” |
+| FireRedASR-AED Large 中英 | `asr-firered-aed/`（encoder/decoder.int8.onnx、tokens.txt） | 无 | 准确率最高、最慢，自动按段识别 |
+
+开发时也可以用脚本下载：`scripts/fetch-models.sh --with-asr firered-ctc`（或 `firered-aed`）。所选模型未安装时自动使用 Paraformer，结果的 `models.asr` 记录实际使用的模型。
 
 ---
 
@@ -242,6 +256,8 @@ export MEETINGASR_MODELS=$PWD/Resources/models
 
 .build/release/meetingasr-cli recognize 会议.m4a                     # 识别整个文件
 .build/release/meetingasr-cli recognize 会议.m4a --from 60 --to 1800 --speakers 4
+.build/release/meetingasr-cli recognize 会议.m4a --asr-model firered-ctc   # 指定识别模型
+.build/release/meetingasr-cli recognize 会议.m4a --mode segment            # 按说话人分段识别（对比用）
 .build/release/meetingasr-cli list                                   # 最近会议
 .build/release/meetingasr-cli show 2026-10-14_143000_周会             # 打印 Markdown
 .build/release/meetingasr-cli name 2026-10-14_143000_周会 S2 张三      # 命名（姓名为空则清除）

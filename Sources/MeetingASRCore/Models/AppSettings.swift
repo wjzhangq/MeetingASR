@@ -72,12 +72,88 @@ public enum RecognitionMode: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// 语音识别模型。
+public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
+    /// Paraformer-zh（随 App 下载，默认）
+    case paraformer
+    /// FireRedASR2-CTC 中英（输出字级时间戳）
+    case fireRedAsrCtc
+    /// FireRedASR-AED large 中英（准确率更高、更慢，不输出字级时间戳）
+    case fireRedAsrAed
+
+    public var displayName: String {
+        switch self {
+        case .paraformer: return "Paraformer-zh（默认）"
+        case .fireRedAsrCtc: return "FireRedASR2-CTC 中英"
+        case .fireRedAsrAed: return "FireRedASR-AED Large 中英"
+        }
+    }
+
+    /// 模型目录名（位于模型根目录下）
+    public var directory: String {
+        switch self {
+        case .paraformer: return "asr"
+        case .fireRedAsrCtc: return "asr-firered-ctc"
+        case .fireRedAsrAed: return "asr-firered-aed"
+        }
+    }
+
+    /// 模型目录中需要的文件
+    public var requiredFiles: [String] {
+        switch self {
+        case .paraformer, .fireRedAsrCtc: return ["model.int8.onnx", "tokens.txt"]
+        case .fireRedAsrAed: return ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"]
+        }
+    }
+
+    /// sherpa-onnx 发布的模型包（asr-models 发布页），解压后的顶层目录同名
+    public var releasePackage: String {
+        switch self {
+        case .paraformer: return "sherpa-onnx-paraformer-zh-2023-09-14"
+        case .fireRedAsrCtc: return "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25"
+        case .fireRedAsrAed: return "sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16"
+        }
+    }
+
+    public var releaseURL: URL {
+        URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\(releasePackage).tar.bz2")!
+    }
+
+    /// 写入结果的模型标识
+    public var modelName: String {
+        switch self {
+        case .paraformer: return "sherpa-onnx-paraformer-zh"
+        case .fireRedAsrCtc: return "sherpa-onnx-fire-red-asr2-ctc-zh_en"
+        case .fireRedAsrAed: return "sherpa-onnx-fire-red-asr-large-zh_en"
+        }
+    }
+
+    /// 是否输出字级时间戳
+    public var providesTimestamps: Bool { self != .fireRedAsrAed }
+
+    /// 命令行与脚本中的名称
+    public var cliName: String {
+        switch self {
+        case .paraformer: return "paraformer"
+        case .fireRedAsrCtc: return "firered-ctc"
+        case .fireRedAsrAed: return "firered-aed"
+        }
+    }
+
+    public init?(cliName: String) {
+        guard let k = Self.allCases.first(where: { $0.cliName == cliName }) else { return nil }
+        self = k
+    }
+}
+
 /// 识别相关参数（FR-C3 高级选项）。
 public struct RecognitionSettings: Codable, Sendable, Equatable {
     /// 默认说话人数，nil 为自动
     public var defaultSpeakerCount: Int?
     /// 识别方式；模型不输出字级时间戳时自动退回按段识别
     public var recognitionMode: RecognitionMode = .asrFirst
+    /// 语音识别模型；所选模型未安装时使用 Paraformer
+    public var asrModel: AsrModelKind = .paraformer
     /// 聚类阈值（人数未知时使用，越小分得越细）
     public var clusterThreshold: Float = 0.5
     public var minDurationOn: Float = 0.3
@@ -165,6 +241,7 @@ extension RecognitionSettings {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         defaultSpeakerCount = try c.decodeIfPresent(Int.self, forKey: .defaultSpeakerCount)
         recognitionMode = (try? c.decodeIfPresent(RecognitionMode.self, forKey: .recognitionMode)) ?? recognitionMode
+        asrModel = (try? c.decodeIfPresent(AsrModelKind.self, forKey: .asrModel)) ?? asrModel
         clusterThreshold = try c.decodeIfPresent(Float.self, forKey: .clusterThreshold) ?? clusterThreshold
         minDurationOn = try c.decodeIfPresent(Float.self, forKey: .minDurationOn) ?? minDurationOn
         minDurationOff = try c.decodeIfPresent(Float.self, forKey: .minDurationOff) ?? minDurationOff

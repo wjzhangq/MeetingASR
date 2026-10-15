@@ -2,7 +2,17 @@
 # 下载随 App 打包的模型到 Resources/models（目录结构见 docs/models.md）。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-$ROOT/Resources/models}"
+# 用法：scripts/fetch-models.sh [目标目录] [--with-asr firered-ctc|firered-aed]...
+# 额外的 FireRedASR 模型可选（体积较大），放在 asr-firered-ctc/ 或 asr-firered-aed/。
+DEST=""
+EXTRA_ASR=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-asr) EXTRA_ASR+=("$2"); shift 2 ;;
+    *) DEST="$1"; shift ;;
+  esac
+done
+DEST="${DEST:-$ROOT/Resources/models}"
 R="https://github.com/k2-fsa/sherpa-onnx/releases/download"
 mkdir -p "$DEST"
 TMP="$(mktemp -d)"
@@ -30,6 +40,20 @@ fetch_tar  "$R/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0
 fetch_file "$R/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx" embedding/campplus.onnx
 fetch_tar  "$R/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12.tar.bz2" sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12 punct
 fetch_file "$R/asr-models/silero_vad.onnx" vad/silero_vad.onnx
+
+for m in "${EXTRA_ASR[@]+"${EXTRA_ASR[@]}"}"; do
+  case "$m" in
+    firered-ctc)
+      fetch_tar "$R/asr-models/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2" sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25 asr-firered-ctc
+      find "$DEST/asr-firered-ctc" -mindepth 1 ! -name 'model.int8.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
+      ;;
+    firered-aed)
+      fetch_tar "$R/asr-models/sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16.tar.bz2" sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16 asr-firered-aed
+      find "$DEST/asr-firered-aed" -mindepth 1 ! -name 'encoder.int8.onnx' ! -name 'decoder.int8.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
+      ;;
+    *) echo "unknown asr model: $m (firered-ctc | firered-aed)" >&2; exit 1 ;;
+  esac
+done
 
 # 仅保留运行所需文件，减小安装包
 find "$DEST/asr" -type f ! -name 'model.int8.onnx' ! -name 'tokens.txt' -delete

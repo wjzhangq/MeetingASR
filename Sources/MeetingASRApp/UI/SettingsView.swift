@@ -177,6 +177,9 @@ private struct CaptureSettings: View {
 
 private struct RecognitionSettingsView: View {
     @ObservedObject var state: AppState
+    @StateObject private var installer = AsrModelInstaller()
+    /// 安装完成后刷新“已安装”状态
+    @State private var installedVersion = 0
 
     private func binding<T>(_ kp: WritableKeyPath<RecognitionSettings, T>) -> Binding<T> {
         Binding(get: { state.settings.recognition[keyPath: kp] }, set: { state.settings.recognition[keyPath: kp] = $0; state.saveSettings() })
@@ -184,6 +187,38 @@ private struct RecognitionSettingsView: View {
 
     var body: some View {
         Form {
+            Section("识别模型") {
+                Picker("模型", selection: binding(\.asrModel)) {
+                    ForEach(AsrModelKind.allCases, id: \.self) { k in
+                        Text(k.displayName + (AsrModelInstaller.isInstalled(k) ? "" : "（未安装）")).tag(k)
+                    }
+                }
+                .id(installedVersion)
+                let kind = state.settings.recognition.asrModel
+                if !AsrModelInstaller.isInstalled(kind) {
+                    HStack {
+                        Text("未安装时使用 Paraformer。").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        switch installer.state {
+                        case .downloading(let p):
+                            ProgressView(value: p).frame(width: 120)
+                            Button("取消") { installer.cancel() }
+                        case .extracting:
+                            ProgressView().controlSize(.small)
+                            Text("正在解压…").font(.caption)
+                        case .idle, .failed:
+                            Button("下载安装") {
+                                installer.install(kind) { _ in installedVersion += 1 }
+                            }
+                            .disabled(installer.installing != nil)
+                        }
+                    }
+                    if case .failed(let msg) = installer.state {
+                        Text("安装失败：\(msg)").font(.caption).foregroundStyle(.red)
+                    }
+                }
+                Text("FireRedASR 对中英混说与技术术语更准，但模型更大（数百 MB 至 1 GB 以上）、更慢；CTC 版输出字级时间戳，AED 版不输出（自动按段识别）。切换后从下一次识别生效。").font(.caption).foregroundStyle(.secondary)
+            }
             Section("识别方式") {
                 Picker("方式", selection: binding(\.recognitionMode)) {
                     ForEach(RecognitionMode.allCases, id: \.self) { Text($0.displayName).tag($0) }

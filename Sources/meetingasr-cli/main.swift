@@ -19,6 +19,8 @@ let usage = """
   --threads N       推理线程数（默认按 CPU 核数）
   --threshold X     聚类阈值（默认 0.5）
   --match X         声纹匹配阈值（默认 0.6）
+  --asr-model M     识别模型：paraformer（默认）| firered-ctc | firered-aed
+  --mode M          识别方式：asr-first（默认，先识别再分配说话人）| segment（按说话人分段识别）
 """
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -50,6 +52,17 @@ let from = option("--from").flatMap(Double.init)
 let to = option("--to").flatMap(Double.init)
 let speakers = option("--speakers").flatMap(Int.init)
 let keepWork = flag("--keep-work")
+let asrModel: AsrModelKind? = option("--asr-model").map { name in
+    guard let k = AsrModelKind(cliName: name) else { fail("未知的识别模型：\(name)") }
+    return k
+}
+let mode: RecognitionMode? = option("--mode").map { name in
+    switch name {
+    case "asr-first": return .asrFirst
+    case "segment": return .segment
+    default: fail("未知的识别方式：\(name)")
+    }
+}
 
 guard let command = args.first else { fail(usage) }
 args.removeFirst()
@@ -61,11 +74,19 @@ func makeProcessor() -> MeetingProcessor {
     guard let paths = modelsDir.map({ ModelPaths(root: URL(fileURLWithPath: $0)) }) ?? ModelPaths.locate() else {
         fail("找不到模型目录，请先运行 scripts/fetch-models.sh 或指定 --models")
     }
+    var settings = AppSettings.load()
+    if let asrModel { settings.recognition.asrModel = asrModel }
+    if let mode { settings.recognition.recognitionMode = mode }
+    let kind = settings.recognition.asrModel
+    if !paths.hasASR(kind) {
+        let dir = paths.root.appendingPathComponent(kind.directory).path
+        if asrModel != nil { fail("识别模型未安装：\(dir)（scripts/fetch-models.sh --with-asr \(kind.cliName)）") }
+        FileHandle.standardError.write(Data("识别模型 \(kind.displayName) 未安装，改用 Paraformer\n".utf8))
+    }
     let t0 = Date()
     let engines: EngineSet
-    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads) } catch { fail("\(error)") }
-    FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（sherpa-onnx %@）\n", Date().timeIntervalSince(t0), SherpaEngineFactory.version).utf8))
-    var settings = AppSettings.load()
+    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind) } catch { fail("\(error)") }
+    FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（%@，sherpa-onnx %@）\n", Date().timeIntervalSince(t0), engines.recognizer.modelName, SherpaEngineFactory.version).utf8))
     settings.recognition.numThreads = threads
     if let threshold { settings.recognition.clusterThreshold = threshold }
     if let match { settings.recognition.matchThreshold = match }

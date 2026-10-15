@@ -43,3 +43,37 @@ final class TextNormalizationTests: XCTestCase {
         XCTAssertEqual(n.normalize(tokens: [TranscriptToken(t: "sdk", start: 1)]).map(\.t), ["SDK"])
     }
 }
+
+final class SubwordMergerTests: XCTestCase {
+    func testParaformerBPE() {
+        let t = SubwordMerger.merge([("我", 0), ("用", 0.2), ("sher@@", 0.4), ("pa", 0.5), ("吧", 0.8)])
+        XCTAssertEqual(t.map(\.t), ["我", "用", "sherpa", "吧"])
+        XCTAssertEqual(t[2].start, 0.4)
+    }
+
+    func testSentencePiece() {
+        let t = SubwordMerger.merge([("测", 0), ("▁fire", 0.2), ("red", 0.3), ("▁asr", 0.5), ("模", 0.7), ("型", 0.8), ("<unk>", 0.9)])
+        XCTAssertEqual(t.map(\.t), ["测", "fire" + "red", "asr", "模", "型"])
+        XCTAssertEqual(TokenText.join(t), "测 firered asr 模型")
+    }
+}
+
+final class EstimatedTokensTests: XCTestCase {
+    func testEstimatedWhenModelHasNoTimestamps() {
+        let r = RecognitionResult(text: "用 FireRed 识别，好的。")
+        let t = r.tokensOrEstimated(start: 1, end: 3)
+        XCTAssertEqual(t.map(\.t), ["用", "FireRed", "识", "别", "好", "的"])
+        XCTAssertEqual(t.first?.start, 1)
+        XCTAssertLessThan(t.last!.start, 3)
+        // 有时间戳时原样返回
+        let r2 = RecognitionResult(text: "好", tokens: [TranscriptToken(t: "好", start: 0.3)])
+        XCTAssertEqual(r2.tokensOrEstimated(start: 0, end: 1).map(\.start), [0.3])
+    }
+
+    func testAsrModelNames() {
+        XCTAssertEqual(AsrModelKind(cliName: "firered-ctc"), .fireRedAsrCtc)
+        XCTAssertNil(AsrModelKind(cliName: "whisper"))
+        XCTAssertFalse(AsrModelKind.fireRedAsrAed.providesTimestamps)
+        XCTAssertEqual(AsrModelKind.fireRedAsrCtc.releaseURL.lastPathComponent, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2")
+    }
+}

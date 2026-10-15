@@ -19,6 +19,7 @@ public final class ProcessingQueue: @unchecked Sendable {
     private let worker = DispatchQueue(label: "meetingasr.processing", qos: .utility)
     private let makeProcessor: () throws -> MeetingProcessor
     private var processor: MeetingProcessor?
+    private var needsReload = false
     private let onEvent: @Sendable (ProcessingEvent) -> Void
 
     /// - Parameters:
@@ -27,6 +28,13 @@ public final class ProcessingQueue: @unchecked Sendable {
     public init(makeProcessor: @escaping () throws -> MeetingProcessor, onEvent: @escaping @Sendable (ProcessingEvent) -> Void) {
         self.makeProcessor = makeProcessor
         self.onEvent = onEvent
+    }
+
+    /// 下一个任务开始前重新创建处理器（重新加载模型），用于切换识别模型、线程数等。
+    public func reloadEngines() {
+        lock.lock()
+        needsReload = true
+        lock.unlock()
     }
 
     /// 每个任务开始前用于刷新参数（设置、热词）的回调。
@@ -95,6 +103,10 @@ public final class ProcessingQueue: @unchecked Sendable {
             let m = pending.removeFirst()
             let flag = CancellationFlag()
             current = (m, flag)
+            if needsReload {
+                processor = nil
+                needsReload = false
+            }
             lock.unlock()
 
             onEvent(.started(m))
