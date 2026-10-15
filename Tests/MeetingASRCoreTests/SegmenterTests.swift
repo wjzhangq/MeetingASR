@@ -102,5 +102,8 @@ final class SegmenterTests: XCTestCase {
         XCTAssertFalse(det.isEcho(mic: own, system: system))
         // 麦克风能量更高时（本人说话盖过外放）不判为回声
         XCTAssertFalse(det.isEcho(mic: system.map { $0 * 2 }, system: system))
+        // 外放音量大：回声只衰减 3 dB，但包络几乎一致 → 判为回声
+        let loud = [Float](repeating: 0, count: delay) + system.prefix(system.count - delay).map { $0 * 0.7 }
+        XCTAssertTrue(det.isEcho(mic: loud, system: system))
     }
 }

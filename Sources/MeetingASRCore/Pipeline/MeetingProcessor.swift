@@ -20,14 +20,16 @@ public struct ProcessingOptions: Sendable {
     public var hotwords: HotwordList
     public var segmenter: SegmenterConfig
     public var echo: EchoDetector
+    public var textEcho: TextEchoFilter
     /// 识别成功后删除原始音频（FR-P6）
     public var deleteRawOnSuccess: Bool
 
-    public init(recognition: RecognitionSettings = RecognitionSettings(), hotwords: HotwordList = HotwordList(words: []), segmenter: SegmenterConfig = SegmenterConfig(), echo: EchoDetector = EchoDetector(), deleteRawOnSuccess: Bool = true) {
+    public init(recognition: RecognitionSettings = RecognitionSettings(), hotwords: HotwordList = HotwordList(words: []), segmenter: SegmenterConfig = SegmenterConfig(), echo: EchoDetector = EchoDetector(), textEcho: TextEchoFilter = TextEchoFilter(), deleteRawOnSuccess: Bool = true) {
         self.recognition = recognition
         self.hotwords = hotwords
         self.segmenter = segmenter
         self.echo = echo
+        self.textEcho = textEcho
         self.deleteRawOnSuccess = deleteRawOnSuccess
     }
 }
@@ -216,6 +218,9 @@ public final class MeetingProcessor {
             // 重叠段只保留一份内容
             pieces = OverlapDeduplicator.dedupe(pieces)
         }
+
+        // 文本层回声兜底：麦克风轨与会议软件轨同时同字成片 → 删除
+        if twoTrack { pieces = options.textEcho.filter(pieces) }
 
         // 热词纠错 → 缩写规范 → 标点
         let out: [TranscriptSegment] = pieces.map { pc in

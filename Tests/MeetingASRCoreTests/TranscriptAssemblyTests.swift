@@ -110,3 +110,50 @@ final class AsrFirstTests: XCTestCase {
         XCTAssertEqual(out.map(\.text), ["第一句", "第二句"])
     }
 }
+
+final class TextEchoTests: XCTestCase {
+    func toks(_ s: String, from t0: Double, step: Double = 0.25) -> [TranscriptToken] {
+        s.enumerated().map { TranscriptToken(t: String($1), start: t0 + Double($0) * step) }
+    }
+
+    func piece(_ track: TrackKind, _ spk: String, _ text: String, from t0: Double) -> RecognizedPiece {
+        let t = toks(text, from: t0)
+        return RecognizedPiece(speaker: spk, track: track, start: t0, end: t0 + Double(text.count) * 0.25, text: text, tokens: t)
+    }
+
+    func testEchoRunRemovedOwnSpeechKept() {
+        let sys = piece(.system, "S2", "我们下周再讨论端侧方案", from: 10)
+        // 麦克风：本人先说"好的"，随后外放回声（滞后 0.15 秒、有一个字识别错）
+        var mic = piece(.mic, "S1", "好的", from: 9.3)
+        mic.tokens += toks("我们下州再讨论端侧方案", from: 10.15)
+        mic.end = 13
+        let out = TextEchoFilter().filter([mic, sys])
+        XCTAssertEqual(out.count, 2)
+        XCTAssertEqual(out.first { $0.track == .mic }?.text, "好的")
+    }
+
+    func testWhollyEchoedPieceDropped() {
+        let sys = piece(.system, "S2", "今天中午吃的啥呀", from: 20)
+        let mic = piece(.mic, "S1", "今天中午吃的啥呀", from: 20.2)
+        XCTAssertEqual(TextEchoFilter().filter([mic, sys]).map(\.track), [.system])
+    }
+
+    func testCoincidentalCommonCharsKept() {
+        let sys = piece(.system, "S2", "这是我的问题", from: 5)
+        let mic = piece(.mic, "S1", "那是你的看法", from: 5.1)
+        XCTAssertEqual(TextEchoFilter().filter([mic, sys]).count, 2)
+    }
+
+    func testSameTextAtDifferentTimeKept() {
+        let sys = piece(.system, "S2", "我同意这个方案", from: 5)
+        let mic = piece(.mic, "S1", "我同意这个方案", from: 30)
+        XCTAssertEqual(TextEchoFilter().filter([mic, sys]).count, 2)
+    }
+
+    func testTextFallbackWithoutTokens() {
+        let sys = RecognizedPiece(speaker: "S2", track: .system, start: 10, end: 14, text: "我们下周再讨论端侧方案。")
+        let mic = RecognizedPiece(speaker: "S1", track: .mic, start: 10.1, end: 14, text: "下周再讨论端侧方案")
+        let own = RecognizedPiece(speaker: "S1", track: .mic, start: 15, end: 16, text: "好的没问题")
+        XCTAssertEqual(TextEchoFilter().filter([mic, sys, own]).map(\.text), ["我们下周再讨论端侧方案。", "好的没问题"])
+    }
+}
