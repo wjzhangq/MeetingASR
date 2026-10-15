@@ -199,6 +199,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var launchAtLogin: Bool = false
     /// 已完成首次启动引导
     public var onboardingDone: Bool = false
+    /// 会议检测：会议软件开始通话时提示是否录音
+    public var meetingDetection: Bool = true
+    /// 会议结束（会议软件停止通话）时自动停止录音并识别
+    public var autoStopOnMeetingEnd: Bool = true
 
     public init() {}
 
@@ -232,6 +236,8 @@ extension AppSettings {
         hotkeyPauseResume = try c.decodeIfPresent(HotkeySetting.self, forKey: .hotkeyPauseResume)
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? launchAtLogin
         onboardingDone = try c.decodeIfPresent(Bool.self, forKey: .onboardingDone) ?? onboardingDone
+        meetingDetection = try c.decodeIfPresent(Bool.self, forKey: .meetingDetection) ?? meetingDetection
+        autoStopOnMeetingEnd = try c.decodeIfPresent(Bool.self, forKey: .autoStopOnMeetingEnd) ?? autoStopOnMeetingEnd
     }
 }
 

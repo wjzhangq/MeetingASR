@@ -131,6 +131,11 @@ private struct CaptureSettings: View {
                 }
                 Toggle("回声消除（外放时减少远端声音串入麦克风）", isOn: Binding(get: { state.settings.micVoiceProcessing }, set: { state.settings.micVoiceProcessing = $0; state.saveSettings() }))
             }
+            Section("会议检测") {
+                Toggle("会议软件开始通话时提示是否录音", isOn: Binding(get: { state.settings.meetingDetection }, set: { state.settings.meetingDetection = $0; state.saveSettings() }))
+                Toggle("会议结束时自动停止录音并识别", isOn: Binding(get: { state.settings.autoStopOnMeetingEnd }, set: { state.settings.autoStopOnMeetingEnd = $0; state.saveSettings() }))
+                Text("按下方已启用的会议软件检测：持续占用麦克风 5 秒视为会议开始，停止通话（不再采集也不再播放声音）15 秒视为会议结束。只会自动停止检测到会议的录音。").font(.caption).foregroundStyle(.secondary)
+            }
             Section("会议软件（按 Bundle ID 匹配，含子进程）") {
                 ForEach(state.settings.captureApps) { app in
                     HStack {

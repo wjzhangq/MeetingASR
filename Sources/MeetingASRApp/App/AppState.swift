@@ -38,6 +38,11 @@ final class AppState: ObservableObject {
     private var queue: ProcessingQueue!
     private var ticker: Timer?
     let sleepGuard = SleepGuard()
+    let meetingWatcher = MeetingWatcher()
+    /// 本次录音期间检测到过会议（会议结束时才自动停止，避免误停手动开始的其他录音）
+    private var meetingSeenDuringRecording = false
+    /// 正在显示“是否开始录音”的提示
+    private var meetingPromptShown = false
     /// 系统强制睡眠导致的暂停，唤醒后询问是否继续
     private var pausedBySleep = false
 
@@ -82,7 +87,54 @@ final class AppState: ObservableObject {
         }
         sleepGuard.onWillSleep = { [weak self] in self?.handleSleep() }
         sleepGuard.onDidWake = { [weak self] in self?.handleWake() }
+        meetingWatcher.onStarted = { [weak self] app in self?.handleMeetingStarted(app) }
+        meetingWatcher.onEnded = { [weak self] app in self?.handleMeetingEnded(app) }
         refreshRecent()
+        configureMeetingWatcher()
+    }
+
+    // MARK: - 会议检测
+
+    /// 按设置启停会议检测。
+    func configureMeetingWatcher() {
+        if settings.meetingDetection || settings.autoStopOnMeetingEnd {
+            meetingWatcher.start(apps: settings.captureApps)
+        } else {
+            meetingWatcher.stop()
+        }
+    }
+
+    private func handleMeetingStarted(_ app: String) {
+        if session != nil {
+            // 已在录音（手动开始）：会议结束时可自动停止
+            meetingSeenDuringRecording = true
+            return
+        }
+        guard settings.meetingDetection, !meetingPromptShown else { return }
+        meetingPromptShown = true
+        defer { meetingPromptShown = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "检测到 \(app) 会议"
+        alert.informativeText = settings.autoStopOnMeetingEnd
+            ? "是否开始录音？会议结束后将自动停止录音并开始识别。"
+            : "是否开始录音？"
+        alert.addButton(withTitle: "开始录音")
+        alert.addButton(withTitle: "本次不录")
+        // 提示期间会议已结束则不再开始
+        guard alert.runModal() == .alertFirstButtonReturn, session == nil, meetingWatcher.inMeeting else { return }
+        switch preflight() {
+        case .micPermissionDenied:
+            lastError = "麦克风权限被拒绝，请在 系统设置 › 隐私与安全性 中允许"
+        case .ok, .appNotRunning:
+            startRecording(StartRequest())
+        }
+    }
+
+    private func handleMeetingEnded(_ app: String) {
+        guard settings.autoStopOnMeetingEnd, session != nil, meetingSeenDuringRecording else { return }
+        stop()
+        Notifier.shared.post(title: "\(app) 会议已结束", body: "已自动停止录音并开始识别。")
     }
 
     // MARK: - 设置
@@ -96,6 +148,7 @@ final class AppState: ObservableObject {
         }
         people.maxSamplesPerPerson = settings.recognition.maxSamplesPerPerson
         registerHotkeys()
+        configureMeetingWatcher()
     }
 
     func saveHotwords() {
@@ -167,6 +220,7 @@ final class AppState: ObservableObject {
                 micDevice = s.micDeviceName
                 if includeApp, !s.isTapAttached { tapStatus = "会议软件未在运行，等待中…" }
                 recorderState = .recording
+                meetingSeenDuringRecording = meetingWatcher.inMeeting
                 sleepGuard.preventIdleSleep(true)
                 startTicker()
                 warnIfSpeakerOutput(includeMic: includeMic, includeApp: includeApp)
@@ -197,6 +251,7 @@ final class AppState: ObservableObject {
         guard let session else { return }
         let m = session.stop()
         self.session = nil
+        meetingSeenDuringRecording = false
         recorderState = .idle
         elapsed = 0
         tapStatus = nil
