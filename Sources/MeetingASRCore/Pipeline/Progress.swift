@@ -20,15 +20,15 @@ public enum ProcessingStage: String, Sendable, CaseIterable {
         }
     }
 
-    /// 各阶段在总进度中的占比
+    /// 各阶段在总进度中的占比（按 1 小时会议实测耗时：分离约 70%、识别约 25%）
     var weight: Double {
         switch self {
-        case .preprocess: return 0.08
-        case .diarization: return 0.27
-        case .recognition: return 0.47
-        case .speakerID: return 0.13
-        case .output: return 0.03
-        case .cleanup: return 0.02
+        case .preprocess: return 0.03
+        case .diarization: return 0.62
+        case .recognition: return 0.30
+        case .speakerID: return 0.03
+        case .output: return 0.01
+        case .cleanup: return 0.01
         }
     }
 
@@ -57,6 +57,14 @@ public struct ProcessingProgress: Sendable, Equatable {
     }
 
     public var percent: Int { Int((fraction * 100).rounded(.down)) }
+
+    /// 当前阶段内的进度 0...1
+    public var stageFraction: Double {
+        min(1, max(0, (fraction - stage.startFraction) / stage.weight))
+    }
+
+    /// 当前阶段内的百分比
+    public var stagePercent: Int { Int((stageFraction * 100).rounded(.down)) }
 }
 
 /// 线程安全的取消标志（FR-P7）。

@@ -97,7 +97,7 @@ struct MenuPanelView: View {
             if let p = state.currentProcessing {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text("\(p.progress.stage.displayName) \(p.progress.percent)%").font(.caption)
+                        Text("\(p.progress.stage.displayName) \(p.progress.stagePercent)%（总 \(p.progress.percent)%）").font(.caption.monospacedDigit())
                         Spacer()
                         Button("取消") { state.cancelProcessing(p.name) }.controlSize(.small).buttonStyle(.borderless)
                     }

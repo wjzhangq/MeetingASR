@@ -19,6 +19,8 @@ public struct ProcessingOptions: Sendable {
     public var recognition: RecognitionSettings
     public var hotwords: HotwordList
     public var segmenter: SegmenterConfig
+    /// 长音频分块分离
+    public var blockDiarization = BlockDiarizationConfig()
     public var echo: EchoDetector
     public var textEcho: TextEchoFilter
     /// 识别成功后删除原始音频（FR-P6）
@@ -43,6 +45,22 @@ public final class MeetingProcessor {
     public var options: ProcessingOptions
 
     private static let sr = Preprocessor.targetRate
+
+    /// 分离各阶段耗时（按本机实测持续校准，用于无回调阶段的进度估计）
+    struct DiarizationTiming {
+        /// 切分阶段：每秒音频耗时（秒）
+        var segSecondsPerAudioSec = 0.04
+        /// 切分阶段占单块分离总耗时的比例
+        var segShare = 0.42
+
+        mutating func learn(total: Double, segment: Double?, audioSec: Double) {
+            guard let segment, total > 0.5, audioSec > 10 else { return }
+            segSecondsPerAudioSec = 0.5 * segSecondsPerAudioSec + 0.5 * (segment / audioSec)
+            segShare = min(0.8, max(0.1, 0.5 * segShare + 0.5 * (segment / total)))
+        }
+    }
+
+    private var diarTiming = DiarizationTiming()
 
     public init(engines: EngineSet, store: MeetingStore, people: PeopleStore, options: ProcessingOptions) {
         self.engines = engines
@@ -122,27 +140,70 @@ public final class MeetingProcessor {
             try cancel.check()
             let base = Double(ti) / Double(tracks.count)
             let span = 1 / Double(tracks.count)
+            // 本轨进度 0...1；推理库没有回调的阶段由心跳按预计用时推进，不会长时间停住
             progress(.at(.diarization, base))
+            let ticker = ProgressTicker { lf in progress(.at(.diarization, base + span * lf)) }
+            defer { ticker.stop() }
             let samples = track.reader.readAllMono()
+            let audioSec = Double(samples.count) / Double(Self.sr)
             let raw: [RawSpan]
-            let vad = (asrFirst || (twoTrack && track.kind == .mic)) ? engines.vad.detect(samples) : []
+            let micOnly = twoTrack && track.kind == .mic
+            let needVAD = asrFirst || micOnly
+            let vadShare = micOnly ? 0.95 : (needVAD ? 0.08 : 0)
+            let vad = needVAD ? engines.vad.detect(samples) { ticker.set(vadShare * $0) } : []
             vadByTrack[track.kind] = vad.map { ($0.lowerBound + track.offset)...($0.upperBound + track.offset) }
-            if twoTrack && track.kind == .mic {
+            if micOnly {
                 // 线上会议麦克风轨：整轨一个说话人，只做 VAD 切段
                 raw = vad.map { RawSpan(speaker: "mic", start: $0.lowerBound, end: $0.upperBound) }
             } else {
                 var n = meta.expectedSpeakers ?? rec.defaultSpeakerCount
                 if twoTrack, let k = n { n = max(1, k - 1) } // 预计人数含本人
-                let opts = DiarizationOptions(numSpeakers: n, threshold: rec.clusterThreshold, minDurationOn: rec.minDurationOn, minDurationOff: rec.minDurationOff)
-                let spans = engines.diarizer.diarize(samples, options: opts) { p in
-                    progress(.at(.diarization, base + span * p))
-                    return !cancel.isCancelled
-                }.map { RawSpan(speaker: "\(track.kind.rawValue)-\($0.speaker)", start: $0.start, end: $0.end) }
+                // 长音频分块分离：每块独立聚类，块之间更新进度、可取消
+                let blocks = BlockPlanner.blocks(samples, sampleRate: Self.sr, config: options.blockDiarization)
+                let diarEnd = 0.92
+                let w = (diarEnd - vadShare) / Double(blocks.count)
+                var spans: [RawSpan] = []
+                for (bi, b) in blocks.enumerated() {
+                    try cancel.check()
+                    // 分块时各块人数未知（某块可能只有部分人发言），跨块关联后再按指定人数合并
+                    let opts = DiarizationOptions(numSpeakers: blocks.count > 1 ? nil : n, threshold: rec.clusterThreshold,
+                                                  minDurationOn: rec.minDurationOn, minDurationOff: rec.minDurationOff)
+                    let off = Double(b.lowerBound) / Double(Self.sr)
+                    let part = blocks.count > 1 ? Array(samples[b]) : samples
+                    let partSec = Double(part.count) / Double(Self.sr)
+                    // 切分阶段（无回调）→ 声纹阶段（有回调）→ 聚类（无回调）
+                    let b0 = vadShare + Double(bi) * w
+                    let seg = diarTiming.segShare
+                    let t0 = Date()
+                    var firstCallback: Date?
+                    ticker.estimate(from: b0, to: b0 + w * seg, expectedSeconds: diarTiming.segSecondsPerAudioSec * partSec)
+                    spans += engines.diarizer.diarize(part, options: opts) { p in
+                        if firstCallback == nil { firstCallback = Date() }
+                        ticker.set(b0 + w * (seg + (1 - seg - 0.03) * p))
+                        if p >= 1 { ticker.estimate(from: b0 + w * 0.97, to: b0 + w, expectedSeconds: max(0.5, 0.002 * partSec)) }
+                        return !cancel.isCancelled
+                    }.map { RawSpan(speaker: "\(track.kind.rawValue)-\(bi)-\($0.speaker)", start: $0.start + off, end: $0.end + off) }
+                    diarTiming.learn(total: Date().timeIntervalSince(t0), segment: firstCallback.map { $0.timeIntervalSince(t0) }, audioSec: partSec)
+                    ticker.set(b0 + w)
+                }
+                try cancel.check()
+                // 跨块关联与簇合并：按簇提取声纹，无回调，按预计用时推进
+                ticker.estimate(from: diarEnd, to: 0.99, expectedSeconds: max(1, 0.004 * audioSec))
+                let embed: (Double, Double) -> [Float]? = { s, e in self.engines.embedder.embed(Self.slice(samples, s, e)) }
+                if blocks.count > 1 {
+                    // 跨块统一说话人编号
+                    let merger = SpeakerClusterMerger(config: rec.clusterMerge)
+                    let items = merger.clusterStats(spans, embed: embed).map { c in
+                        CrossBlockLinker.Item(id: c.id, block: Int(c.id.split(separator: "-")[1]) ?? 0, duration: c.duration, centroid: c.centroid)
+                    }
+                    let map = CrossBlockLinker.link(items, similarity: options.blockDiarization.linkSimilarity, fixedCount: n)
+                    spans = spans.map { var x = $0; x.speaker = map[x.speaker] ?? x.speaker; return x }
+                }
                 try cancel.check()
                 // 合并分得过细的簇（同一人物 / 声纹相近 / 碎簇）
                 raw = SpeakerClusterMerger(config: rec.clusterMerge).merge(
                     spans, fixedSpeakerCount: n, matchThreshold: rec.matchThreshold,
-                    embed: { s, e in self.engines.embedder.embed(Self.slice(samples, s, e)) },
+                    embed: embed,
                     identify: identifyPerson)
             }
             try cancel.check()
@@ -150,7 +211,7 @@ public final class MeetingProcessor {
                 self.silencePoints(in: samples, from: s, to: e)
             }
             perTrack.append(segs)
-            progress(.at(.diarization, base + span))
+            ticker.set(1)
         }
         var segments = Segmenter.combine(perTrack)
 

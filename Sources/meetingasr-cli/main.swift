@@ -107,7 +107,7 @@ func run(_ m: MeetingPaths) {
                 FileHandle.standardError.write(Data(String(format: "\r%@ 用时 %.1fs        \n", stageStart.0.displayName, Date().timeIntervalSince(stageStart.1)).utf8))
                 stageStart = (p.stage, Date())
             }
-            let line = "\(p.stage.displayName) \(p.percent)%"
+            let line = String(format: "%@ %.1f%%（总 %d%%）", p.stage.displayName, p.stageFraction * 100, p.percent)
             if line != lastLine {
                 lastLine = line
                 FileHandle.standardError.write(Data("\r\(line)        ".utf8))

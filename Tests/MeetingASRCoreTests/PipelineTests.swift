@@ -5,9 +5,14 @@ import XCTest
 // 用不同频率的正弦"语音"代表不同说话人：声纹 = 主频所在频带的 one-hot。
 
 private func dominantBand(_ x: [Float]) -> Int {
-    var crossings = 0
-    for i in 1..<max(1, x.count) where (x[i - 1] < 0) != (x[i] < 0) { crossings += 1 }
-    let freq = Double(crossings) / 2 / (Double(x.count) / 16_000)
+    // 只按有声样本估计频率（帧可能跨越静音）
+    var crossings = 0, active = 0
+    for i in 1..<max(1, x.count) where abs(x[i]) > 1e-4 || abs(x[i - 1]) > 1e-4 {
+        active += 1
+        if (x[i - 1] < 0) != (x[i] < 0) { crossings += 1 }
+    }
+    guard active > 0 else { return 0 }
+    let freq = Double(crossings) / 2 / (Double(active) / 16_000)
     return min(7, Int(freq / 100))
 }
 
@@ -245,6 +250,25 @@ final class PipelineTests: XCTestCase {
         // 用户的源文件不能被删除
         XCTAssertTrue(FileManager.default.fileExists(atPath: src.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: m.rawDir.path))
+    }
+
+    func testLongAudioDiarizedInBlocks() throws {
+        // 30 秒音频按 8 秒分块：两人交替发言，跨块后仍统一为 2 位说话人
+        let src = layout.root.appendingPathComponent("input/长会.wav")
+        let parts: [(Double, Double, Double)] = stride(from: 0.0, to: 30, by: 3).map { ($0, $0 + 2.5, Int($0 / 3) % 2 == 0 ? 250 : 450) }
+        try WavWriter.writeMono(track(rate: 16_000, seconds: 30, parts: parts), sampleRate: 16_000, to: src)
+        let m = try MeetingFactory.createFileMeeting(source: src, range: nil, expectedSpeakers: nil, layout: layout)
+        var opts = ProcessingOptions()
+        opts.blockDiarization.blockSec = 8
+        opts.blockDiarization.searchSec = 2
+        let e = engines()
+        let proc = MeetingProcessor(engines: e, store: MeetingStore(layout: layout), people: PeopleStore(layout: layout), options: opts)
+        let t = try proc.process(m)
+        XCTAssertEqual(t.speakers.map(\.id), ["S1", "S2"])
+        XCTAssertEqual(t.segments.count, 10)
+        XCTAssertEqual(t.segments.map(\.speaker), (0..<10).map { $0 % 2 == 0 ? "S1" : "S2" })
+        // 分块时不向每块传入人数
+        XCTAssertNil((e.diarizer as! MockDiarizer).lastOptions?.numSpeakers)
     }
 
     func testCancellationKeepsRawAudio() throws {

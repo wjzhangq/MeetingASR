@@ -83,6 +83,16 @@ public protocol SpeakerEmbedder: AnyObject {
 public protocol VoiceActivityDetector: AnyObject {
     /// - Returns: 语音区间（秒，相对输入起点）
     func detect(_ samples: [Float]) -> [ClosedRange<Double>]
+    /// 带进度（0...1）的检测，长音频用
+    func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>]
+}
+
+extension VoiceActivityDetector {
+    public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
+        let r = detect(samples)
+        progress(1)
+        return r
+    }
 }
 
 /// 一套推理引擎。模型加载较慢，由应用创建一次并在任务间复用（任务串行执行）。

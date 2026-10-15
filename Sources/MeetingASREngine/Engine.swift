@@ -179,6 +179,10 @@ public final class SherpaVAD: VoiceActivityDetector {
     }
 
     public func detect(_ samples: [Float]) -> [ClosedRange<Double>] {
+        detect(samples) { _ in }
+    }
+
+    public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
         // 每次检测新建实例，避免状态残留；模型很小，开销可忽略
         let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.5, minSilenceDuration: 0.3,
                                                     minSpeechDuration: 0.25, windowSize: 512, maxSpeechDuration: 30)
@@ -200,6 +204,7 @@ public final class SherpaVAD: VoiceActivityDetector {
             vad.acceptWaveform(samples: Array(samples[i..<end]))
             collect()
             i = end
+            progress(Double(i) / Double(max(1, samples.count)))
         }
         vad.flush()
         collect()
