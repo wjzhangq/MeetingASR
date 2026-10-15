@@ -3,11 +3,13 @@ import Foundation
 public enum PeopleStoreError: Error, CustomStringConvertible {
     case personNotFound(String)
     case emptyName
+    case invalidColor(String)
 
     public var description: String {
         switch self {
         case .personNotFound(let id): return "人物不存在：\(id)"
         case .emptyName: return "姓名不能为空"
+        case .invalidColor(let s): return "颜色格式不正确：\(s)（应为 #RRGGBB）"
         }
     }
 }
@@ -79,7 +81,12 @@ public final class PeopleStore: @unchecked Sendable {
         return try withLock {
             var id: String
             repeat { id = "p_" + String(format: "%04x", Int.random(in: 0..<0x10000)) } while db.people.contains { $0.id == id }
-            let p = Person(id: id, name: trimmed)
+            // 新人物按色板依次取一个较少使用的颜色，之后的会议中保持不变
+            let used = db.people.compactMap(\.color)
+            let color = PersonColor.palette.min { a, b in
+                used.filter { $0 == a }.count < used.filter { $0 == b }.count
+            }
+            let p = Person(id: id, name: trimmed, color: color)
             db.people.append(p)
             try save()
             return p
@@ -92,6 +99,20 @@ public final class PeopleStore: @unchecked Sendable {
         try withLock {
             guard let i = db.people.firstIndex(where: { $0.id == personId }) else { throw PeopleStoreError.personNotFound(personId) }
             db.people[i].name = trimmed
+            try save()
+        }
+    }
+
+    /// 设置人物颜色（"#RRGGBB"），nil 恢复为默认（按会议内顺序取色）。
+    public func setColor(personId: String, to color: String?) throws {
+        var value: String?
+        if let color {
+            guard let c = PersonColor.normalize(color) else { throw PeopleStoreError.invalidColor(color) }
+            value = c
+        }
+        try withLock {
+            guard let i = db.people.firstIndex(where: { $0.id == personId }) else { throw PeopleStoreError.personNotFound(personId) }
+            db.people[i].color = value
             try save()
         }
     }

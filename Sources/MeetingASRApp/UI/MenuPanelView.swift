@@ -67,6 +67,7 @@ struct MenuPanelView: View {
                     if let m = state.latestCompleted { router.route = .preview(m.paths.name) }
                 }
                 MenuRow(title: "识别音频文件…", icon: "waveform.badge.plus") { actions.recognizeFile() }
+                MenuRow(title: "声纹库…", icon: "person.2") { state.openPeopleLibrary?() }
                 Divider().padding(.vertical, 4)
                 recentList
                 Divider().padding(.vertical, 4)

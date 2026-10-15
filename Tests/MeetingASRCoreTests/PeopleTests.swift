@@ -121,6 +121,34 @@ final class PeopleTests: XCTestCase {
         XCTAssertThrowsError(try store.findOrCreate(name: "  "))
     }
 
+    func testPersonColor() throws {
+        XCTAssertEqual(PersonColor.normalize("#0a84ff"), "#0A84FF")
+        XCTAssertEqual(PersonColor.normalize("f0a"), "#FF00AA")
+        XCTAssertNil(PersonColor.normalize("#12345"))
+        XCTAssertNil(PersonColor.normalize("zzzzzz"))
+        XCTAssertEqual(PersonColor.hex(r: 1, g: 0.5, b: 0), "#FF8000")
+
+        let store = PeopleStore(layout: layout)
+        // 新人物依次取色板中未使用的颜色
+        let a = try store.findOrCreate(name: "张三")
+        let b = try store.findOrCreate(name: "李四")
+        XCTAssertEqual(a.color, PersonColor.palette[0])
+        XCTAssertEqual(b.color, PersonColor.palette[1])
+
+        try store.setColor(personId: a.id, to: "#ff0000")
+        XCTAssertEqual(store.person(id: a.id)?.color, "#FF0000")
+        XCTAssertThrowsError(try store.setColor(personId: a.id, to: "red"))
+        try store.setColor(personId: b.id, to: nil)
+        // 落盘后重新读取
+        let reloaded = PeopleStore(layout: layout)
+        XCTAssertEqual(reloaded.person(id: a.id)?.color, "#FF0000")
+        XCTAssertNil(reloaded.person(id: b.id)?.color)
+        // 旧版 people.json 没有 color 字段也能读取
+        let old = #"{"embedding_model":"x","people":[{"id":"p_1","name":"王五","created_at":"2026-10-14T14:30:00+08:00","samples":[]}]}"#
+        let db = try JSONIO.makeDecoder().decode(PeopleDatabase.self, from: Data(old.utf8))
+        XCTAssertNil(db.people[0].color)
+    }
+
     func testReembed() throws {
         let store = PeopleStore(layout: layout)
         let a = try store.findOrCreate(name: "A")

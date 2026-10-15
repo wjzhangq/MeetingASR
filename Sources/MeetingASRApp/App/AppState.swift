@@ -429,6 +429,8 @@ final class AppState: ObservableObject {
 
     /// 会议被删除后通知界面关闭对应的预览
     var onMeetingDeleted: ((String) -> Void)?
+    /// 打开声纹库窗口（由菜单栏控制器提供）
+    var openPeopleLibrary: (() -> Void)?
     /// 会议改名后通知界面更新窗口标题（目录名、新标题）
     var onMeetingRenamed: ((String, String) -> Void)?
 

@@ -5,6 +5,18 @@ import SwiftUI
 enum Palette {
     static let colors: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .brown, .indigo, .mint, .red, .cyan, .yellow]
     static func color(_ i: Int) -> Color { colors[i % colors.count] }
+
+    /// "#RRGGBB" → Color
+    static func color(hex: String?) -> Color? {
+        guard let hex, let (r, g, b) = PersonColor.components(hex) else { return nil }
+        return Color(.sRGB, red: r, green: g, blue: b)
+    }
+
+    /// Color → "#RRGGBB"
+    static func hex(_ c: Color) -> String? {
+        guard let n = NSColor(c).usingColorSpace(.sRGB) else { return nil }
+        return PersonColor.hex(r: Double(n.redComponent), g: Double(n.greenComponent), b: Double(n.blueComponent))
+    }
 }
 
 /// 结果预览：顶部说话人卡片区，正文逐字稿（FR-V1 ~ V5、FR-N5 ~ N10）。
@@ -129,9 +141,9 @@ struct PreviewView: View {
                         Text("（暂停）").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                     }
                     HStack(spacing: 6) {
-                        Circle().fill(Palette.color(model.colorIndex(for: b.speaker))).frame(width: 8, height: 8)
+                        Circle().fill(model.color(for: b.speaker)).frame(width: 8, height: 8)
                         Text(t.displayName(of: b.speaker)).font(.subheadline.bold())
-                            .foregroundStyle(Palette.color(model.colorIndex(for: b.speaker)))
+                            .foregroundStyle(model.color(for: b.speaker))
                         Text("\(TranscriptWriter.clock(b.start)) – \(TranscriptWriter.clock(b.end))")
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -165,7 +177,7 @@ struct SpeakerCardView: View {
     @State private var editing = false
     @FocusState private var focused: Bool
 
-    private var color: Color { Palette.color(card.colorIndex) }
+    private var color: Color { model.color(for: card.id, fallback: card.colorIndex) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
