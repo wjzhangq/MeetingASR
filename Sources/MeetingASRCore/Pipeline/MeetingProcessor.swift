@@ -164,21 +164,29 @@ public final class MeetingProcessor {
         let hotwords = options.hotwords.adding(people.allNames)
         let corrector = HotwordCorrector(hotwords: hotwords)
         let acronyms = AcronymNormalizer(extra: hotwords.words)
-        var out: [TranscriptSegment] = []
+        var pieces: [RecognizedPiece] = []
         let asrSegs = segments.filter { !$0.isEcho }
         for (i, seg) in asrSegs.enumerated() {
             try cancel.check()
             guard let track = tracks.first(where: { $0.kind == seg.track }) else { continue }
             let audio = read(track, seg.cropStart, seg.cropEnd)
             let r = engines.recognizer.recognize(audio)
-            var text = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                text = acronyms.normalize(corrector.correct(text))
-                if let p = engines.punctuator { text = acronyms.normalize(p.punctuate(text)) }
-                let tokens = acronyms.normalize(tokens: corrector.correct(tokens: r.tokens)).map { TranscriptToken(t: $0.t, start: Self.round2($0.start + seg.cropStart)) }
-                out.append(TranscriptSegment(speaker: seg.speaker, start: Self.round2(seg.start), end: Self.round2(seg.end), text: text, tokens: tokens.isEmpty ? nil : tokens))
+                let tokens = r.tokens.map { TranscriptToken(t: $0.t, start: $0.start + seg.cropStart) }
+                pieces.append(RecognizedPiece(speaker: seg.speaker, track: seg.track, start: seg.start, end: seg.end, text: text, tokens: tokens))
             }
             progress(.at(.recognition, Double(i + 1) / Double(max(1, asrSegs.count))))
+        }
+        // 重叠段只保留一份内容
+        pieces = OverlapDeduplicator.dedupe(pieces)
+
+        // 热词纠错 → 缩写规范 → 标点
+        let out: [TranscriptSegment] = pieces.map { pc in
+            var text = acronyms.normalize(corrector.correct(pc.text))
+            if let p = engines.punctuator { text = acronyms.normalize(p.punctuate(text)) }
+            let tokens = acronyms.normalize(tokens: corrector.correct(tokens: pc.tokens)).map { TranscriptToken(t: $0.t, start: Self.round2($0.start)) }
+            return TranscriptSegment(speaker: pc.speaker, start: Self.round2(pc.start), end: Self.round2(pc.end), text: text, tokens: tokens.isEmpty ? nil : tokens)
         }
 
         // 4. 特征片段与人物匹配（4.6）
