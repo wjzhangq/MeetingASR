@@ -87,6 +87,37 @@ public enum Preprocessor {
         return Result(url: output, durationSec: writer.durationSec, gain: gain)
     }
 
+    /// 一段内存中音频的归一增益（与 `process` 的第一遍统计相同：只统计高于 -50 dBFS 的 20ms 帧）。
+    public static func loudnessGain(_ x: [Float], sampleRate: Int) -> Float {
+        let frameLen = max(1, sampleRate / 50)
+        var sumSq: Double = 0
+        var active = 0
+        var peak: Float = 0
+        var i = 0
+        while i < x.count {
+            let n = min(frameLen, x.count - i)
+            var e: Float = 0
+            for j in i..<(i + n) {
+                e += x[j] * x[j]
+                peak = max(peak, abs(x[j]))
+            }
+            if e / Float(n) > 1e-5 {
+                sumSq += Double(e)
+                active += n
+            }
+            i += n
+        }
+        var gain: Float = 1
+        if active > 0 {
+            let rms = Float(sqrt(sumSq / Double(active)))
+            if rms > 0 { gain = min(maxGain, targetRMS / rms) }
+        }
+        if peak * gain > 0.99, peak > 0 {
+            gain = max(min(gain, 0.99 / peak), min(gain, 1))
+        }
+        return gain
+    }
+
     @inline(__always)
     static func softClip(_ x: Float) -> Float {
         let a = abs(x)

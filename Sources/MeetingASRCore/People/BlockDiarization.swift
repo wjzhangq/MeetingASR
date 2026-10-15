@@ -18,32 +18,41 @@ public struct BlockDiarizationConfig: Sendable, Equatable {
 }
 
 public enum BlockPlanner {
-    /// 把 [0, count) 切成若干块（样本下标），切点取目标位置附近能量最低的 0.2 秒帧中点。
-    public static func blocks(_ samples: [Float], sampleRate: Int, config: BlockDiarizationConfig) -> [Range<Int>] {
+    /// 把 [from, count) 切成若干块（样本下标），切点取目标位置附近能量最低的 0.2 秒帧中点。
+    /// - Parameter from: 起点（前面部分已在录音期间分离，见 LiveDiarizer）
+    public static func blocks(_ samples: [Float], sampleRate: Int, config: BlockDiarizationConfig, from: Int = 0) -> [Range<Int>] {
         let n = samples.count
+        guard from < n else { return from == 0 ? [0..<n] : [] }
         let block = Int(config.blockSec * Double(sampleRate))
-        guard block > 0, n > block + block / 2 else { return [0..<n] }
-        let frame = max(1, sampleRate / 5)
+        guard block > 0, n - from > block + block / 2 else { return [from..<n] }
         let search = Int(config.searchSec * Double(sampleRate))
         var out: [Range<Int>] = []
-        var start = 0
+        var start = from
         while n - start > block + block / 2 {
             let target = start + block
             let lo = max(start + block / 2, target - search), hi = min(n - block / 2, target + search)
-            var cut = target
-            var best = Float.infinity
-            var i = lo
-            while i + frame <= hi {
-                var e: Float = 0
-                for k in i..<(i + frame) { e += samples[k] * samples[k] }
-                if e < best { best = e; cut = i + frame / 2 }
-                i += frame
-            }
+            let cut = quietestCut(samples, lo: lo, hi: hi, target: target, sampleRate: sampleRate)
             out.append(start..<cut)
             start = cut
         }
         out.append(start..<n)
         return out
+    }
+
+    /// 在 [lo, hi) 内找能量最低的 0.2 秒帧，返回其中点；范围不足一帧时返回 target。
+    public static func quietestCut(_ samples: [Float], lo: Int, hi: Int, target: Int, sampleRate: Int) -> Int {
+        let frame = max(1, sampleRate / 5)
+        var cut = target
+        var best = Float.infinity
+        var i = max(0, lo)
+        let end = min(hi, samples.count)
+        while i + frame <= end {
+            var e: Float = 0
+            for k in i..<(i + frame) { e += samples[k] * samples[k] }
+            if e < best { best = e; cut = i + frame / 2 }
+            i += frame
+        }
+        return cut
     }
 }
 

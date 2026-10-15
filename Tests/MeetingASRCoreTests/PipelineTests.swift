@@ -43,8 +43,10 @@ private final class MockPunct: Punctuator {
 /// 以 0.5 秒为帧，按能量与主频切分并聚类。
 private final class MockDiarizer: SpeakerDiarizer {
     var lastOptions: DiarizationOptions?
+    var calls = 0
     func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan] {
         lastOptions = options
+        calls += 1
         let frame = 8000
         var spans: [RawSpan] = []
         var i = 0
@@ -269,6 +271,40 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(t.segments.map(\.speaker), (0..<10).map { $0 % 2 == 0 ? "S1" : "S2" })
         // 分块时不向每块传入人数
         XCTAssertNil((e.diarizer as! MockDiarizer).lastOptions?.numSpeakers)
+    }
+
+    func testReusesBlocksDiarizedDuringRecording() throws {
+        // 32 秒单轨录音按 8 秒分块（切在约 8.7、17.7、26.7 秒）：录音期间已分离的块直接复用，识别时只分离剩余部分
+        let (m, meta0) = try MeetingFactory.createRecordingMeeting(title: "长会", expectedSpeakers: nil, layout: layout)
+        let parts: [(Double, Double, Double)] = stride(from: 0.0, to: 32, by: 3).map { ($0, $0 + 2.5, Int($0 / 3) % 2 == 0 ? 250 : 450) }
+        try WavWriter.writeMono(track(rate: 48_000, seconds: 32, parts: parts), sampleRate: 48_000, to: m.rawTrack(.mic))
+        var meta = meta0
+        meta.tracks = [TrackInfo(kind: .mic, file: ".raw/mic.wav", sampleRate: 48_000, channels: 1, firstHostTime: 1000)]
+        meta.durationSec = 32
+        meta.status = .pending
+        try JSONIO.write(meta, to: m.meta)
+
+        var opts = ProcessingOptions()
+        opts.blockDiarization.blockSec = 8
+        opts.blockDiarization.searchSec = 2
+        let e = engines()
+        let key = DiarizationCache.Key(track: .mic, recognition: opts.recognition, config: opts.blockDiarization, models: e.models)
+        let live = LiveDiarizer(source: m.rawTrack(.mic), cacheURL: DiarizationCache.url(m, track: .mic), key: key,
+                                recognition: opts.recognition, diarizer: e.diarizer, config: opts.blockDiarization)
+        let liveBlocks = try live.step()
+        XCTAssertEqual(liveBlocks, 3)
+        let mock = e.diarizer as! MockDiarizer
+        XCTAssertEqual(mock.calls, 3)
+
+        let proc = MeetingProcessor(engines: e, store: MeetingStore(layout: layout), people: PeopleStore(layout: layout), options: opts)
+        let t = try proc.process(m)
+        // 识别时只分离了最后一块
+        XCTAssertEqual(mock.calls, 4)
+        XCTAssertEqual(t.speakers.map(\.id), ["S1", "S2"])
+        XCTAssertEqual(t.segments.count, 11)
+        XCTAssertEqual(t.segments.map(\.speaker), (0..<11).map { $0 % 2 == 0 ? "S1" : "S2" })
+        // 缓存随原始音频一起删除
+        XCTAssertFalse(FileManager.default.fileExists(atPath: m.rawDir.path))
     }
 
     func testCancellationKeepsRawAudio() throws {
