@@ -67,6 +67,10 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public var minDurationOff: Float = 0.5
     /// 声纹匹配阈值
     public var matchThreshold: Double = 0.6
+    /// 分离后合并相似簇的声纹相似度阈值（人数未知时使用，0 关闭）
+    public var clusterMergeSimilarity: Double = 0.65
+    /// 发言总时长短于该值（秒）的说话人并入最相近的说话人（0 关闭）
+    public var minSpeakerSec: Double = 2
     /// 每个说话人保存的特征片段数
     public var clipsPerSpeaker: Int = 3
     public var clipMinSec: Double = 3
@@ -79,6 +83,13 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public static var defaultThreads: Int { min(8, max(2, ProcessInfo.processInfo.activeProcessorCount)) }
 
     public init() {}
+
+    public var clusterMerge: ClusterMergeConfig {
+        var c = ClusterMergeConfig()
+        c.similarity = clusterMergeSimilarity
+        c.minSpeakerSec = minSpeakerSec
+        return c
+    }
 }
 
 /// 设置（保存在 ~/Library/Application Support/MeetingASR/settings.json）。
@@ -140,6 +151,8 @@ extension RecognitionSettings {
         minDurationOn = try c.decodeIfPresent(Float.self, forKey: .minDurationOn) ?? minDurationOn
         minDurationOff = try c.decodeIfPresent(Float.self, forKey: .minDurationOff) ?? minDurationOff
         matchThreshold = try c.decodeIfPresent(Double.self, forKey: .matchThreshold) ?? matchThreshold
+        clusterMergeSimilarity = try c.decodeIfPresent(Double.self, forKey: .clusterMergeSimilarity) ?? clusterMergeSimilarity
+        minSpeakerSec = try c.decodeIfPresent(Double.self, forKey: .minSpeakerSec) ?? minSpeakerSec
         clipsPerSpeaker = try c.decodeIfPresent(Int.self, forKey: .clipsPerSpeaker) ?? clipsPerSpeaker
         clipMinSec = try c.decodeIfPresent(Double.self, forKey: .clipMinSec) ?? clipMinSec
         clipMaxSec = try c.decodeIfPresent(Double.self, forKey: .clipMaxSec) ?? clipMaxSec

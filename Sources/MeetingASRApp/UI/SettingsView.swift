@@ -195,6 +195,11 @@ private struct RecognitionSettingsView: View {
                     Slider(value: binding(\.clusterThreshold), in: 0.2...0.9, step: 0.05)
                 }
                 Text("人数未知时使用。越小分得越细（说话人越多）。").font(.caption).foregroundStyle(.secondary)
+                LabeledContent("相似说话人合并 \(state.settings.recognition.clusterMergeSimilarity > 0 ? String(format: "%.2f", state.settings.recognition.clusterMergeSimilarity) : "关闭")") {
+                    Slider(value: binding(\.clusterMergeSimilarity), in: 0...0.9, step: 0.05)
+                }
+                Text("分离后声纹相似度达到该值的说话人合并为一人，0 为关闭。越小合并越多。与人物库同一人匹配的说话人总会合并。").font(.caption).foregroundStyle(.secondary)
+                Stepper("发言少于 \(Int(state.settings.recognition.minSpeakerSec)) 秒的说话人并入最相近者", value: binding(\.minSpeakerSec), in: 0...10, step: 1)
                 LabeledContent("声纹匹配阈值 \(String(format: "%.2f", state.settings.recognition.matchThreshold))") {
                     Slider(value: binding(\.matchThreshold), in: 0.3...0.9, step: 0.05)
                 }

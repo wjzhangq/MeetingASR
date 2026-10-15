@@ -106,6 +106,11 @@ public final class MeetingProcessor {
         // 2. 说话人分离（4.3）
         let twoTrack = tracks.contains { $0.kind == .mic } && tracks.contains { $0.kind == .system }
         var perTrack: [[ASRSegment]] = []
+        let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
+        let candidates = people.people.filter { !$0.samples.isEmpty }
+        let identifyPerson: SpeakerClusterMerger.Identify? = candidates.isEmpty ? nil : { emb in
+            candidates.map { (personId: $0.id, score: matcher.similarity(emb, to: $0)) }.max { $0.score < $1.score }
+        }
         let segmenter = Segmenter(config: options.segmenter)
         for (ti, track) in tracks.enumerated() {
             try cancel.check()
@@ -121,10 +126,16 @@ public final class MeetingProcessor {
                 var n = meta.expectedSpeakers ?? rec.defaultSpeakerCount
                 if twoTrack, let k = n { n = max(1, k - 1) } // 预计人数含本人
                 let opts = DiarizationOptions(numSpeakers: n, threshold: rec.clusterThreshold, minDurationOn: rec.minDurationOn, minDurationOff: rec.minDurationOff)
-                raw = engines.diarizer.diarize(samples, options: opts) { p in
+                let spans = engines.diarizer.diarize(samples, options: opts) { p in
                     progress(.at(.diarization, base + span * p))
                     return !cancel.isCancelled
                 }.map { RawSpan(speaker: "\(track.kind.rawValue)-\($0.speaker)", start: $0.start, end: $0.end) }
+                try cancel.check()
+                // 合并分得过细的簇（同一人物 / 声纹相近 / 碎簇）
+                raw = SpeakerClusterMerger(config: rec.clusterMerge).merge(
+                    spans, fixedSpeakerCount: n, matchThreshold: rec.matchThreshold,
+                    embed: { s, e in self.engines.embedder.embed(Self.slice(samples, s, e)) },
+                    identify: identifyPerson)
             }
             try cancel.check()
             let segs = segmenter.process(raw, track: track.kind, totalDuration: track.reader.durationSec, offset: track.offset) { s, e in
@@ -183,7 +194,6 @@ public final class MeetingProcessor {
             }
             progress(.at(.speakerID, 0.8 * Double(i + 1) / Double(max(1, speakerIDs.count))))
         }
-        let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
         let result = matcher.match(speakers: records.filter { !$0.embedding.isEmpty }.map { ($0.id, $0.embedding) }, people: people.people)
         var speakers: [TranscriptSpeaker] = speakerIDs.map { TranscriptSpeaker(id: $0, track: trackOfSpeaker[$0] ?? .file) }
         for i in records.indices {
@@ -315,6 +325,12 @@ public final class MeetingProcessor {
 
     private func read(_ t: PreparedTrack, _ start: Double, _ end: Double) -> [Float] {
         t.reader.readMono(from: max(0, start - t.offset), to: max(0, end - t.offset))
+    }
+
+    /// 样本数组中 [s, e) 秒的片段。
+    static func slice(_ samples: [Float], _ s: Double, _ e: Double) -> [Float] {
+        let a = max(0, Int(s * Double(sr))), b = min(samples.count, Int(e * Double(sr)))
+        return b > a ? Array(samples[a..<b]) : []
     }
 
     /// 在区间内用 VAD 找静音点（语音区间之间的中点，全局时间）。
