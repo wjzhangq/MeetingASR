@@ -52,8 +52,19 @@ final class SegmenterTests: XCTestCase {
         XCTAssertEqual(out.count, 2)
         XCTAssertEqual(out[0].cropStart, 100, accuracy: 1e-9)
         XCTAssertEqual(out[0].start, 100.05, accuracy: 1e-9)
-        XCTAssertEqual(out[1].cropStart, 104.9, accuracy: 1e-9)
+        XCTAssertEqual(out[1].cropStart, 104.75, accuracy: 1e-9)
         XCTAssertEqual(out[1].cropEnd, 110, accuracy: 1e-9)
+    }
+
+    func testPaddingStopsAtNeighbors() {
+        let out = seg.finalize([
+            RawSpan(speaker: "A", start: 1, end: 3),
+            RawSpan(speaker: "B", start: 3.1, end: 5),
+            RawSpan(speaker: "A", start: 5.4, end: 7),
+            RawSpan(speaker: "B", start: 6.5, end: 8), // 与上一段重叠，不作为边界
+        ], track: .system, totalDuration: 20)
+        XCTAssertEqual(out.map(\.cropStart), [0.75, 3, 5.15, 6.25])
+        XCTAssertEqual(out.map(\.cropEnd), [3.1, 5.25, 7.25, 8.25])
     }
 
     func testCombineSortsAndMarksOverlap() {

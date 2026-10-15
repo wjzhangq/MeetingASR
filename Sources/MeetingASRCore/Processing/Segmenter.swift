@@ -49,8 +49,8 @@ public struct SegmenterConfig: Sendable {
     public var mergeGap: Double = 0.5
     /// 单段最大时长
     public var maxSegment: Double = 30
-    /// 前后补边
-    public var padding: Double = 0.1
+    /// 前后补边（不越过相邻段的边界）
+    public var padding: Double = 0.25
     /// 短于该值的段丢弃
     public var minSegment: Double = 0.3
 
@@ -105,16 +105,44 @@ public struct Segmenter: Sendable {
     }
 
     /// 3/4. 丢弃过短段，补边，生成 ASR 分段。
+    /// 补边不越过本轨相邻段（任意说话人，含被丢弃的短段）的边界，避免把邻段的字裁进来造成重复；
+    /// 与本段重叠的段无法避开，不作为边界。
     public func finalize(_ spans: [RawSpan], track: TrackKind, totalDuration: Double, offset: Double = 0) -> [ASRSegment] {
-        spans.compactMap { s in
+        let ends = spans.map(\.end).sorted()
+        let starts = spans.map(\.start).sorted()
+        return spans.compactMap { s in
             guard s.duration >= config.minSegment else { return nil }
-            let start = s.start + offset, end = s.end + offset
+            var lo = max(0, s.start - config.padding)
+            var hi = min(totalDuration, s.end + config.padding)
+            // 本段之前结束的最晚段尾、本段之后开始的最早段首
+            if let prevEnd = Self.lastLE(ends, s.start) { lo = max(lo, min(prevEnd, s.start)) }
+            if let nextStart = Self.firstGE(starts, s.end) { hi = min(hi, max(nextStart, s.end)) }
             return ASRSegment(
-                speaker: s.speaker, track: track, start: start, end: end,
-                cropStart: max(0, s.start - config.padding) + offset,
-                cropEnd: min(totalDuration, s.end + config.padding) + offset
+                speaker: s.speaker, track: track, start: s.start + offset, end: s.end + offset,
+                cropStart: lo + offset,
+                cropEnd: hi + offset
             )
         }
+    }
+
+    /// 有序数组中 ≤ x 的最大值。
+    static func lastLE(_ a: [Double], _ x: Double) -> Double? {
+        var l = 0, h = a.count
+        while l < h {
+            let m = (l + h) / 2
+            if a[m] <= x { l = m + 1 } else { h = m }
+        }
+        return l > 0 ? a[l - 1] : nil
+    }
+
+    /// 有序数组中 ≥ x 的最小值。
+    static func firstGE(_ a: [Double], _ x: Double) -> Double? {
+        var l = 0, h = a.count
+        while l < h {
+            let m = (l + h) / 2
+            if a[m] < x { l = m + 1 } else { h = m }
+        }
+        return l < a.count ? a[l] : nil
     }
 
     /// 单轨完整处理：合并 → 切分 → 丢弃短段 → 补边。

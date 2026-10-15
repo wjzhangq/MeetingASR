@@ -157,7 +157,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(t.segments[0].text.hasPrefix("星图平台"))
         XCTAssertTrue(t.segments[0].text.hasSuffix("。"))
         XCTAssertEqual(t.segments[0].tokens?.first?.t, "星")
-        XCTAssertGreaterThan(t.segments[0].tokens?.first?.start ?? 0, 0.9)
+        XCTAssertGreaterThan(t.segments[0].tokens?.first?.start ?? 0, 0.8)
         XCTAssertEqual(t.pauses, [PauseMark(at: 20)])
 
         // 原始音频已删除，只保留结果和特征片段
