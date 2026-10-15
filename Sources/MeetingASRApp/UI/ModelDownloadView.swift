@@ -34,7 +34,14 @@ struct ModelDownloadView: View {
                 case .idle:
                     Button("开始下载") {
                         Task {
-                            await downloader.downloadModels()
+                            // 开发模式：检查环境变量指定的本地归档
+                            if let localPath = ProcessInfo.processInfo.environment["LOCAL_MODEL_ARCHIVE"],
+                               !localPath.isEmpty {
+                                let localURL = URL(fileURLWithPath: localPath)
+                                await downloader.downloadModels(localArchive: localURL)
+                            } else {
+                                await downloader.downloadModels()
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)

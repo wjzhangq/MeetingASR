@@ -47,7 +47,8 @@ public final class ModelDownloader: ObservableObject {
     }
 
     /// 下载并安装模型。
-    public func downloadModels() async {
+    /// - Parameter localArchive: 可选的本地归档路径，用于开发测试（跳过下载和校验）
+    public func downloadModels(localArchive: URL? = nil) async {
         guard case .idle = state else { return }
 
         state = .downloading
@@ -65,13 +66,22 @@ public final class ModelDownloader: ObservableObject {
             try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-            let archivePath = tmpDir.appendingPathComponent("models.tar.bz2")
+            let archivePath: URL
 
-            // 3. 下载模型包
-            try await downloadFile(
-                from: modelDownloadURL(),
-                to: archivePath
-            )
+            // 3. 下载或使用本地归档
+            if let localArchive = localArchive {
+                // 开发模式：直接使用本地文件
+                statusMessage = "使用本地归档：\(localArchive.lastPathComponent)"
+                progress = 1.0
+                archivePath = localArchive
+            } else {
+                // 生产模式：从网络下载
+                archivePath = tmpDir.appendingPathComponent("models.tar.bz2")
+                try await downloadFile(
+                    from: modelDownloadURL(),
+                    to: archivePath
+                )
+            }
 
             // 4. 解压
             state = .extracting
@@ -79,15 +89,19 @@ public final class ModelDownloader: ObservableObject {
             progress = 0.0
             try await extractArchive(archivePath, to: destDir)
 
-            // 5. 验证
-            state = .verifying
-            statusMessage = "正在验证模型..."
-            progress = 0.0
-            try verifyModels(at: destDir)
+            // 5. 验证（本地模式跳过）
+            if localArchive == nil {
+                state = .verifying
+                statusMessage = "正在验证模型..."
+                progress = 0.0
+                try verifyModels(at: destDir)
+            } else {
+                statusMessage = "跳过校验（本地模式）"
+            }
 
             // 6. 完成
             state = .completed
-            statusMessage = "模型下载完成"
+            statusMessage = "模型安装完成"
             progress = 1.0
 
         } catch {
