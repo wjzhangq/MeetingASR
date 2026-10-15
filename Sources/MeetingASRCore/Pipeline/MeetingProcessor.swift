@@ -150,7 +150,9 @@ public final class MeetingProcessor {
         let trackOfSpeaker = Dictionary(segments.map { ($0.speaker, $0.track) }, uniquingKeysWith: { a, _ in a })
 
         // 3. 分段 ASR（4.4）
-        let corrector = HotwordCorrector(hotwords: options.hotwords.adding(people.allNames))
+        let hotwords = options.hotwords.adding(people.allNames)
+        let corrector = HotwordCorrector(hotwords: hotwords)
+        let acronyms = AcronymNormalizer(extra: hotwords.words)
         var out: [TranscriptSegment] = []
         let asrSegs = segments.filter { !$0.isEcho }
         for (i, seg) in asrSegs.enumerated() {
@@ -160,9 +162,9 @@ public final class MeetingProcessor {
             let r = engines.recognizer.recognize(audio)
             var text = r.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                text = corrector.correct(text)
-                if let p = engines.punctuator { text = p.punctuate(text) }
-                let tokens = corrector.correct(tokens: r.tokens).map { TranscriptToken(t: $0.t, start: Self.round2($0.start + seg.cropStart)) }
+                text = acronyms.normalize(corrector.correct(text))
+                if let p = engines.punctuator { text = acronyms.normalize(p.punctuate(text)) }
+                let tokens = acronyms.normalize(tokens: corrector.correct(tokens: r.tokens)).map { TranscriptToken(t: $0.t, start: Self.round2($0.start + seg.cropStart)) }
                 out.append(TranscriptSegment(speaker: seg.speaker, start: Self.round2(seg.start), end: Self.round2(seg.end), text: text, tokens: tokens.isEmpty ? nil : tokens))
             }
             progress(.at(.recognition, Double(i + 1) / Double(max(1, asrSegs.count))))
