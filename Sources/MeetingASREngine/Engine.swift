@@ -218,24 +218,45 @@ public final class SherpaVAD: VoiceActivityDetector {
     }
 }
 
+/// 说话人分离策略。
+public enum DiarizationStrategy {
+    /// pyannote 切分 + 声纹 + 聚类（默认，精度高，支持重叠语音）
+    case pyannote
+    /// VAD + 固定窗口 + 两阶段聚类（快速，低内存，会议场景推荐）
+    case fast
+}
+
 /// 创建全套引擎。
 public enum SherpaEngineFactory {
     /// - Parameter asrModel: 所选识别模型；未安装时使用 Paraformer
     /// - Parameter provider: 推理后端，"cpu" 或 "coreml"（神经引擎）
-    public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer, provider: String = "cpu") throws -> EngineSet {
+    /// - Parameter diarizationStrategy: 说话人分离策略
+    public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer,
+                           provider: String = "cpu", diarizationStrategy: DiarizationStrategy = .pyannote) throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
         let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
         let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads, provider: provider)
+        let embedder = try SherpaEmbedder(paths: paths, numThreads: numThreads, provider: provider)
+        let vad = try SherpaVAD(paths: paths)
+
+        let diarizer: SpeakerDiarizer
+        switch diarizationStrategy {
+        case .pyannote:
+            diarizer = try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider)
+        case .fast:
+            diarizer = SherpaFastDiarizer(vad: vad, embedder: embedder)
+        }
+
         var models = ModelVersions.bundled
         models.asr = recognizer.modelName
         if punct == nil { models.punctuation = nil }
         return EngineSet(
             recognizer: recognizer,
             punctuator: punct,
-            diarizer: try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider),
-            embedder: try SherpaEmbedder(paths: paths, numThreads: numThreads, provider: provider),
-            vad: try SherpaVAD(paths: paths),
+            diarizer: diarizer,
+            embedder: embedder,
+            vad: vad,
             models: models
         )
     }
