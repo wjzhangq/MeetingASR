@@ -12,7 +12,7 @@ public final class SherpaRecognizer: SpeechRecognizer {
     public var providesTimestamps: Bool { kind.providesTimestamps }
     private let recognizer: SherpaOnnxOfflineRecognizer
 
-    public init(paths: ModelPaths, kind: AsrModelKind = .paraformer, numThreads: Int) throws {
+    public init(paths: ModelPaths, kind: AsrModelKind = .paraformer, numThreads: Int, provider: String = "cpu") throws {
         guard let dir = paths.asrDirectory(kind) else {
             throw EngineError.modelMissing(paths.root.appendingPathComponent(kind.directory).path)
         }
@@ -24,14 +24,14 @@ public final class SherpaRecognizer: SpeechRecognizer {
             model = sherpaOnnxOfflineModelConfig(
                 tokens: tokens,
                 paraformer: sherpaOnnxOfflineParaformerModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path),
-                numThreads: numThreads, provider: "cpu")
+                numThreads: numThreads, provider: provider)
         case .fireRedAsrCtc:
             model = sherpaOnnxOfflineModelConfig(
-                tokens: tokens, numThreads: numThreads, provider: "cpu",
+                tokens: tokens, numThreads: numThreads, provider: provider,
                 fireRedAsrCtc: sherpaOnnxOfflineFireRedAsrCtcModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path))
         case .fireRedAsrAed:
             model = sherpaOnnxOfflineModelConfig(
-                tokens: tokens, numThreads: numThreads, provider: "cpu",
+                tokens: tokens, numThreads: numThreads, provider: provider,
                 fireRedAsr: sherpaOnnxOfflineFireRedAsrModelConfig(
                     encoder: dir.appendingPathComponent("encoder.int8.onnx").path,
                     decoder: dir.appendingPathComponent("decoder.int8.onnx").path))
@@ -43,7 +43,7 @@ public final class SherpaRecognizer: SpeechRecognizer {
     public func recognize(_ samples: [Float]) -> RecognitionResult {
         guard samples.count >= 1600 else { return RecognitionResult(text: "") }
         let r = recognizer.decode(samples: samples, sampleRate: 16_000)
-        let text = r.text
+        let rawText = r.text
         var pieces: [(String, Double)] = []
         let raw = r.result.pointee
         let ts = r.timestamps
@@ -53,7 +53,11 @@ public final class SherpaRecognizer: SpeechRecognizer {
                 pieces.append((String(cString: p), Double(ts[i])))
             }
         }
-        return RecognitionResult(text: text, tokens: SubwordMerger.merge(pieces))
+        // 过滤 text 中的特殊 token（<sil>、<zh> 等）
+        let cleanText = rawText.split(separator: " ")
+            .filter { !SubwordMerger.isSpecialToken(String($0)) }
+            .joined(separator: " ")
+        return RecognitionResult(text: cleanText, tokens: SubwordMerger.merge(pieces))
     }
 }
 
@@ -79,23 +83,25 @@ public final class SherpaPunctuator: Punctuator {
 public final class SherpaDiarizer: SpeakerDiarizer {
     private let paths: ModelPaths
     private let numThreads: Int
+    private let provider: String
     private var sd: SherpaOnnxOfflineSpeakerDiarizationWrapper?
     private var builtFor: DiarizationOptions?
 
-    public init(paths: ModelPaths, numThreads: Int) throws {
+    public init(paths: ModelPaths, numThreads: Int, provider: String = "cpu") throws {
         for u in [paths.segmentation, paths.embedding] where !FileManager.default.fileExists(atPath: u.path) {
             throw EngineError.modelMissing(u.path)
         }
         self.paths = paths
         self.numThreads = numThreads
+        self.provider = provider
         _ = try build(DiarizationOptions())
     }
 
     private func makeConfig(_ o: DiarizationOptions) -> SherpaOnnxOfflineSpeakerDiarizationConfig {
         let seg = sherpaOnnxOfflineSpeakerSegmentationModelConfig(
             pyannote: sherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig(model: paths.segmentation.path),
-            numThreads: numThreads)
-        let emb = sherpaOnnxSpeakerEmbeddingExtractorConfig(model: paths.embedding.path, numThreads: numThreads)
+            numThreads: numThreads, provider: provider)
+        let emb = sherpaOnnxSpeakerEmbeddingExtractorConfig(model: paths.embedding.path, numThreads: numThreads, provider: provider)
         let cluster = sherpaOnnxFastClusteringConfig(numClusters: o.numSpeakers.map { max(1, $0) } ?? -1, threshold: o.threshold)
         return sherpaOnnxOfflineSpeakerDiarizationConfig(segmentation: seg, embedding: emb, clustering: cluster,
                                                          minDurationOn: o.minDurationOn, minDurationOff: o.minDurationOff)
@@ -152,9 +158,9 @@ public final class SherpaEmbedder: SpeakerEmbedder {
     public let modelName = EmbeddingModel.current
     private let extractor: SherpaOnnxSpeakerEmbeddingExtractorWrapper
 
-    public init(paths: ModelPaths, numThreads: Int) throws {
+    public init(paths: ModelPaths, numThreads: Int, provider: String = "cpu") throws {
         guard FileManager.default.fileExists(atPath: paths.embedding.path) else { throw EngineError.modelMissing(paths.embedding.path) }
-        var config = sherpaOnnxSpeakerEmbeddingExtractorConfig(model: paths.embedding.path, numThreads: numThreads)
+        var config = sherpaOnnxSpeakerEmbeddingExtractorConfig(model: paths.embedding.path, numThreads: numThreads, provider: provider)
         extractor = SherpaOnnxSpeakerEmbeddingExtractorWrapper(config: &config)
         guard extractor.impl != nil else { throw EngineError.initFailed("speaker embedding") }
     }
@@ -184,7 +190,7 @@ public final class SherpaVAD: VoiceActivityDetector {
 
     public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
         // 每次检测新建实例，避免状态残留；模型很小，开销可忽略
-        let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.5, minSilenceDuration: 0.3,
+        let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.6, minSilenceDuration: 0.3,
                                                     minSpeechDuration: 0.25, windowSize: 512, maxSpeechDuration: 30)
         var config = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
         let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: 60)
@@ -215,19 +221,20 @@ public final class SherpaVAD: VoiceActivityDetector {
 /// 创建全套引擎。
 public enum SherpaEngineFactory {
     /// - Parameter asrModel: 所选识别模型；未安装时使用 Paraformer
-    public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer) throws -> EngineSet {
+    /// - Parameter provider: 推理后端，"cpu" 或 "coreml"（神经引擎）
+    public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer, provider: String = "cpu") throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
         let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
-        let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads)
+        let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads, provider: provider)
         var models = ModelVersions.bundled
         models.asr = recognizer.modelName
         if punct == nil { models.punctuation = nil }
         return EngineSet(
             recognizer: recognizer,
             punctuator: punct,
-            diarizer: try SherpaDiarizer(paths: paths, numThreads: numThreads),
-            embedder: try SherpaEmbedder(paths: paths, numThreads: numThreads),
+            diarizer: try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider),
+            embedder: try SherpaEmbedder(paths: paths, numThreads: numThreads, provider: provider),
             vad: try SherpaVAD(paths: paths),
             models: models
         )

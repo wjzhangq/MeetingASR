@@ -75,7 +75,7 @@ public struct DiarizationCache: Codable, Equatable, Sendable {
     }
 }
 
-/// 录音期间的增量分离：读取正在写入的录音文件，每凑够一块（约 5 分钟，切点在附近最安静处）就分离并写入缓存。
+/// 录音期间的增量分离：读取正在写入的录音文件，每凑够一块（约 2 分钟，切点在附近最安静处）就分离并写入缓存。
 /// 不是线程安全的，由调用方在同一个串行队列上调用 `step()`。
 public final class LiveDiarizer {
     public let source: URL

@@ -72,6 +72,24 @@ public enum RecognitionMode: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// 推理后端（Execution Provider）。
+public enum InferenceProvider: String, Codable, Sendable, CaseIterable {
+    /// CPU（兼容性最好）
+    case cpu
+    /// CoreML / Apple Neural Engine（Apple Silicon 硬件加速，默认）
+    case coreml
+
+    public var displayName: String {
+        switch self {
+        case .cpu: return "CPU"
+        case .coreml: return "神经引擎（推荐）"
+        }
+    }
+
+    /// 传给 sherpa-onnx 的 provider 字符串
+    public var providerString: String { rawValue }
+}
+
 /// 语音识别模型。
 public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     /// Paraformer-zh（随 App 下载，默认）
@@ -154,10 +172,12 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public var recognitionMode: RecognitionMode = .asrFirst
     /// 语音识别模型；所选模型未安装时使用 Paraformer
     public var asrModel: AsrModelKind = .paraformer
+    /// 推理后端（CPU / 神经引擎）
+    public var inferenceProvider: InferenceProvider = .coreml
     /// 聚类阈值（人数未知时使用，越小分得越细）
     public var clusterThreshold: Float = 0.5
-    public var minDurationOn: Float = 0.3
-    public var minDurationOff: Float = 0.5
+    public var minDurationOn: Float = 0.5
+    public var minDurationOff: Float = 0.6
     /// 声纹匹配阈值
     public var matchThreshold: Double = 0.6
     /// 分离后合并相似簇的声纹相似度阈值（人数未知时使用，0 关闭）
@@ -203,7 +223,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var meetingDetection: Bool = true
     /// 会议结束（会议软件停止通话）时自动停止录音并识别
     public var autoStopOnMeetingEnd: Bool = true
-    /// 录音期间在后台提前做说话人分离（每 5 分钟一块），停止后只需处理最后一段
+    /// 录音期间在后台提前做说话人分离（每 2 分钟一块），停止后只需处理最后一段
     public var liveDiarization: Bool = true
 
     public init() {}
@@ -251,6 +271,7 @@ extension RecognitionSettings {
         defaultSpeakerCount = try c.decodeIfPresent(Int.self, forKey: .defaultSpeakerCount)
         recognitionMode = (try? c.decodeIfPresent(RecognitionMode.self, forKey: .recognitionMode)) ?? recognitionMode
         asrModel = (try? c.decodeIfPresent(AsrModelKind.self, forKey: .asrModel)) ?? asrModel
+        inferenceProvider = (try? c.decodeIfPresent(InferenceProvider.self, forKey: .inferenceProvider)) ?? inferenceProvider
         clusterThreshold = try c.decodeIfPresent(Float.self, forKey: .clusterThreshold) ?? clusterThreshold
         minDurationOn = try c.decodeIfPresent(Float.self, forKey: .minDurationOn) ?? minDurationOn
         minDurationOff = try c.decodeIfPresent(Float.self, forKey: .minDurationOff) ?? minDurationOff

@@ -87,7 +87,7 @@ func makeProcessor() -> MeetingProcessor {
     }
     let t0 = Date()
     let engines: EngineSet
-    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind) } catch { fail("\(error)") }
+    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString) } catch { fail("\(error)") }
     FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（%@，sherpa-onnx %@）\n", Date().timeIntervalSince(t0), engines.recognizer.modelName, SherpaEngineFactory.version).utf8))
     settings.recognition.numThreads = threads
     if let threshold { settings.recognition.clusterThreshold = threshold }

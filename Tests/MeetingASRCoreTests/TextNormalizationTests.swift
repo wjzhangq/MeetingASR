@@ -56,6 +56,34 @@ final class SubwordMergerTests: XCTestCase {
         XCTAssertEqual(t.map(\.t), ["测", "fire" + "red", "asr", "模", "型"])
         XCTAssertEqual(TokenText.join(t), "测 firered asr 模型")
     }
+
+    func testSpecialTokenFiltering() {
+        // FireRedASR 的静音和语言标记应被过滤
+        let t = SubwordMerger.merge([
+            ("说", 0),
+            ("<sil>", 0.1),
+            ("<sil>", 0.2),
+            ("<zh>", 0.3),
+            ("你", 0.4),
+            ("好", 0.5),
+            ("<en>", 0.6),
+            ("<yue>", 0.7),
+            ("<unk>", 0.8),
+            ("吧", 0.9)
+        ])
+        XCTAssertEqual(t.map(\.t), ["说", "你", "好", "吧"])
+
+        // 验证判定函数
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<sil>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<zh>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<en>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<unk>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<yue>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken("<xinan>"))
+        XCTAssertTrue(SubwordMerger.isSpecialToken(""))
+        XCTAssertFalse(SubwordMerger.isSpecialToken("说"))
+        XCTAssertFalse(SubwordMerger.isSpecialToken("hello"))
+    }
 }
 
 final class EstimatedTokensTests: XCTestCase {

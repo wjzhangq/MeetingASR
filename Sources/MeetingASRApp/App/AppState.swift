@@ -74,7 +74,7 @@ final class AppState: ObservableObject {
         queue = ProcessingQueue(makeProcessor: {
             guard let paths = ModelPaths.locate() else { throw EngineError.modelMissing("Contents/Resources/models") }
             let settings = AppSettings.load()
-            let engines = try SherpaEngineFactory.make(paths: paths, numThreads: settings.recognition.numThreads, asrModel: settings.recognition.asrModel)
+            let engines = try SherpaEngineFactory.make(paths: paths, numThreads: settings.recognition.numThreads, asrModel: settings.recognition.asrModel, provider: settings.recognition.inferenceProvider.providerString)
             return MeetingProcessor(engines: engines, store: MeetingStore(layout: layout), people: people,
                                     options: ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load()))
         }) { [weak self] event in

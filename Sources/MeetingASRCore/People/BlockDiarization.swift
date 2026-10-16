@@ -7,8 +7,8 @@ import Foundation
 /// 块之间更新进度、检查取消，最后用声纹中心把各块的说话人统一编号。
 public struct BlockDiarizationConfig: Sendable, Equatable {
     /// 块长（秒）；音频不超过 1.5 倍块长时不分块；0 关闭分块。
-    /// 块越短，取消越及时、无回调阶段越短；聚类在块内完成，5 分钟足够区分说话人
-    public var blockSec: Double = 300
+    /// 块越短，取消越及时、无回调阶段越短；聚类在块内完成，2 分钟足够区分说话人
+    public var blockSec: Double = 120
     /// 在目标切点前后该范围内找最安静处切开（秒）
     public var searchSec: Double = 30
     /// 跨块说话人声纹中心相似度 ≥ 该值时视为同一人

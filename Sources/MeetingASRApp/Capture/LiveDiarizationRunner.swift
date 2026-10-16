@@ -12,7 +12,7 @@ final class LiveDiarizationRunner: @unchecked Sendable {
     /// 录音时只用少量线程，不影响会议软件与录音
     private static let numThreads = 2
     /// 检查录音文件新增内容的间隔（秒）
-    private static let interval = 30
+    private static let interval = 20
 
     private let meeting: MeetingPaths
     private let track: TrackKind
@@ -38,7 +38,7 @@ final class LiveDiarizationRunner: @unchecked Sendable {
             if live == nil {
                 if Self.diarizer == nil {
                     guard let paths = ModelPaths.locate() else { return }
-                    Self.diarizer = try SherpaDiarizer(paths: paths, numThreads: Self.numThreads)
+                    Self.diarizer = try SherpaDiarizer(paths: paths, numThreads: Self.numThreads, provider: recognition.inferenceProvider.providerString)
                 }
                 guard let diarizer = Self.diarizer else { return }
                 let config = BlockDiarizationConfig()
