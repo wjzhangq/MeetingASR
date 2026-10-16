@@ -14,6 +14,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     private var cancellables: Set<AnyCancellable> = []
     private var windows: [String: NSWindow] = [:]
     private var settingsWindow: NSWindow?
+    private var peopleWindow: NSWindow?
     private var auxWindow: NSWindow?
 
     init(state: AppState) {
@@ -40,6 +41,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             let drop = DropView(frame: button.bounds) { [weak self] url in self?.confirmFile(url) }
             drop.autoresizingMask = [.width, .height]
             button.addSubview(drop)
+        }
+        state.onMeetingDeleted = { [weak self] name in
+            self?.router.forget(name)
+            self?.windows[name]?.close()
+        }
+        state.openPeopleLibrary = { [weak self] in self?.openPeopleLibrary() }
+        state.onMeetingRenamed = { [weak self] name, title in
+            self?.windows[name]?.title = title
         }
         state.objectWillChange
             .receive(on: RunLoop.main)
@@ -218,6 +227,24 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 声纹库独立窗口：人物改名、合并、删除、颜色、样本试听。
+    func openPeopleLibrary() {
+        popover.performClose(nil)
+        if peopleWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480), styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                             backing: .buffered, defer: false)
+            w.title = "声纹库"
+            w.contentViewController = NSHostingController(rootView: PeopleLibraryView(state: state))
+            w.isReleasedWhenClosed = false
+            w.center()
+            peopleWindow = w
+        }
+        peopleWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // 识别完成会自动加入样本：每次打开都重新读取
+        NotificationCenter.default.post(name: .peopleLibraryChanged, object: nil)
     }
 
     func showAux<V: View>(_ view: V, title: String) {

@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import Foundation
 import MeetingASRCore
+import SwiftUI
 
 /// 结果预览的数据模型（3.4 / 3.5）。
 @MainActor
@@ -19,10 +20,16 @@ final class PreviewModel: ObservableObject {
     private var player: AVAudioPlayer?
     private var playerDelegate: PlayerDelegate?
 
+    private var peopleObserver: NSObjectProtocol?
+
     init(meeting: MeetingPaths, state: AppState) {
         self.meeting = meeting
         self.state = state
         reload()
+        // 声纹库中改了颜色等：刷新卡片与逐字稿颜色
+        peopleObserver = NotificationCenter.default.addObserver(forName: .peopleLibraryChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.objectWillChange.send() }
+        }
     }
 
     func reload() {
@@ -62,6 +69,14 @@ final class PreviewModel: ObservableObject {
         return unique.firstIndex(of: key) ?? fallback
     }
 
+    /// 说话人颜色：已关联人物且在声纹库中设置了颜色时用该颜色（跨会议一致），否则按会议内顺序取默认色。
+    func color(for speakerId: String, fallback: Int = 0) -> Color {
+        if let pid = transcript?.speaker(speakerId)?.personId, let c = Palette.color(hex: state.people.person(id: pid)?.color) {
+            return c
+        }
+        return Palette.color(colorIndex(for: speakerId, fallback: fallback))
+    }
+
     func suggestions(for text: String) -> [Person] {
         state.people.suggestions(for: text)
     }
@@ -95,6 +110,8 @@ final class PreviewModel: ObservableObject {
             transcript = try body()
             speakers = try? state.store.loadSpeakers(meeting)
             error = nil
+            // 命名会新建人物 / 增删样本：声纹库窗口与其他预览同步刷新
+            NotificationCenter.default.post(name: .peopleLibraryChanged, object: nil)
         } catch {
             self.error = "\(error)"
         }

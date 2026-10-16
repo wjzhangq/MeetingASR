@@ -13,7 +13,6 @@ struct SettingsView: View {
             CaptureSettings(state: state).tabItem { Label("采集", systemImage: "mic") }
             RecognitionSettingsView(state: state).tabItem { Label("识别", systemImage: "text.bubble") }
             HotwordSettings(state: state).tabItem { Label("热词", systemImage: "text.badge.star") }
-            PeopleSettings(state: state).tabItem { Label("人物库", systemImage: "person.2") }
         }
         .padding(16)
         .frame(width: 560, height: 460)
@@ -57,6 +56,9 @@ private struct GeneralSettings: View {
                         NSWorkspace.shared.open(state.layout.root)
                     }
                     .buttonStyle(.link)
+                }
+                LabeledContent("声纹库") {
+                    Button("打开声纹库…") { state.openPeopleLibrary?() }
                 }
                 Text("所有数据仅保存在本机，运行时不联网。识别完成后原始录音立即删除，仅保留文字结果和每位说话人的少量特征片段。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -283,115 +285,5 @@ private struct HotwordSettings: View {
             }
         }
         .onDisappear { state.saveHotwords() }
-    }
-}
-
-// MARK: - 人物库（FR-C6）
-
-private struct PeopleSettings: View {
-    @ObservedObject var state: AppState
-    @State private var people: [Person] = []
-    @State private var selection: String?
-    @State private var renameText = ""
-    @State private var mergeTarget: String = ""
-    @State private var error: String?
-    @State private var player: AVAudioPlayer?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            List(people, selection: $selection) { p in
-                HStack {
-                    Text(p.name)
-                    Spacer()
-                    Text("\(p.samples.count)").font(.caption).foregroundStyle(.secondary)
-                }
-                .tag(p.id)
-            }
-            .frame(width: 180)
-            if let p = people.first(where: { $0.id == selection }) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(p.name).font(.title3.bold())
-                    Text("ID \(p.id) · \(p.samples.count) 条声纹样本").font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        TextField("新姓名", text: $renameText).textFieldStyle(.roundedBorder)
-                        Button("改名") { run { try state.people.rename(personId: p.id, to: renameText) } }
-                    }
-                    Text("改名不会回溯修改历史会议的逐字稿。").font(.caption2).foregroundStyle(.secondary)
-                    HStack {
-                        Picker("合并到", selection: $mergeTarget) {
-                            Text("选择人物").tag("")
-                            ForEach(people.filter { $0.id != p.id }) { Text($0.name).tag($0.id) }
-                        }
-                        Button("合并") {
-                            let target = mergeTarget
-                            guard !target.isEmpty else { return }
-                            run { try state.people.merge(p.id, into: target) }
-                            selection = target
-                        }
-                    }
-                    Text("样本来源").font(.headline)
-                    List(Array(p.samples.enumerated()), id: \.offset) { _, s in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(s.meeting).lineLimit(1)
-                                Text("\(s.speaker) · \(s.source == .auto ? "自动识别" : "用户标注")").font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if let clip = s.clips.first {
-                                Button { play(state.layout.personDir(p.id).appendingPathComponent(clip)) } label: { Image(systemName: "play.circle") }
-                                    .buttonStyle(.borderless)
-                            }
-                        }
-                    }
-                    HStack {
-                        Spacer()
-                        Button("删除人物", role: .destructive) {
-                            let alert = NSAlert()
-                            alert.messageText = "删除“\(p.name)”？"
-                            alert.informativeText = "将删除该人物的全部声纹样本与片段，之后的会议不再自动识别此人。历史会议逐字稿不受影响。"
-                            alert.addButton(withTitle: "删除")
-                            alert.addButton(withTitle: "取消")
-                            if alert.runModal() == .alertFirstButtonReturn {
-                                run { try state.people.delete(personId: p.id) }
-                                selection = nil
-                            }
-                        }
-                    }
-                    if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                }
-                .onAppear { renameText = p.name }
-                .onChange(of: selection) { _, _ in renameText = people.first { $0.id == selection }?.name ?? "" }
-            } else {
-                VStack {
-                    Spacer()
-                    Text(people.isEmpty ? "人物库为空。在会议结果中为说话人填写姓名后会自动加入。" : "选择一个人物")
-                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .onAppear(perform: reload)
-    }
-
-    private func reload() {
-        state.people.reload()
-        people = state.people.people.sorted { $0.name < $1.name }
-    }
-
-    private func run(_ body: () throws -> Void) {
-        do {
-            try body()
-            error = nil
-        } catch {
-            self.error = "\(error)"
-        }
-        reload()
-    }
-
-    private func play(_ url: URL) {
-        player?.stop()
-        player = try? AVAudioPlayer(contentsOf: url)
-        player?.play()
     }
 }

@@ -420,6 +420,49 @@ final class AppState: ObservableObject {
         refreshRecent()
     }
 
+    // MARK: - 会议管理
+
+    /// 正在录音、排队或识别中的会议不能改名或删除（写入的 meta / 结果会覆盖改动）。
+    func isBusy(_ name: String) -> Bool {
+        session?.meeting.name == name || processing[name] != nil || queued.contains(name)
+    }
+
+    /// 会议被删除后通知界面关闭对应的预览
+    var onMeetingDeleted: ((String) -> Void)?
+    /// 打开声纹库窗口（由菜单栏控制器提供）
+    var openPeopleLibrary: (() -> Void)?
+    /// 会议改名后通知界面更新窗口标题（目录名、新标题）
+    var onMeetingRenamed: ((String, String) -> Void)?
+
+    func renameMeeting(_ name: String, to title: String) {
+        guard !isBusy(name) else {
+            lastError = "会议正在录音或识别中，完成后再改名"
+            return
+        }
+        do {
+            let newTitle = try store.rename(layout.meeting(named: name), title: title)
+            onMeetingRenamed?(name, newTitle)
+        } catch {
+            lastError = "改名失败：\(error)"
+        }
+        refreshRecent()
+    }
+
+    func deleteMeeting(_ name: String) {
+        guard !isBusy(name) else {
+            lastError = "会议正在录音或识别中，无法删除"
+            return
+        }
+        do {
+            try store.delete(layout.meeting(named: name))
+        } catch {
+            lastError = "删除失败：\(error)"
+        }
+        unfinished.removeAll { $0.paths.name == name }
+        onMeetingDeleted?(name)
+        refreshRecent()
+    }
+
     func refreshRecent() {
         recent = store.recentMeetings(limit: 10)
     }

@@ -11,6 +11,8 @@ let usage = """
   meetingasr-cli list                           最近会议
   meetingasr-cli show <会议目录名>               打印 Markdown 逐字稿
   meetingasr-cli name <会议目录名> <S1> <姓名>    为说话人命名（姓名为空则清除）
+  meetingasr-cli rename <会议目录名> <新标题>     修改会议标题（目录名不变）
+  meetingasr-cli delete <会议目录名>             删除会议（不可恢复，人物库样本保留）
   meetingasr-cli people                         人物库
 
 通用选项：
@@ -160,6 +162,14 @@ case "name":
         let t = try SpeakerNaming(store: store, people: people).assign(name: name, to: args[1], in: m)
         for s in t.speakers { print("\(s.id)\t\(s.name)\t\(s.source.rawValue)") }
     } catch { fail("\(error)") }
+
+case "rename":
+    guard args.count >= 2 else { fail(usage) }
+    do { print(try store.rename(meeting(args[0]), title: args[1...].joined(separator: " "))) } catch { fail("改名失败：\(error)") }
+
+case "delete":
+    let m = meeting(args.first)
+    do { try store.delete(m); print("已删除：\(m.name)") } catch { fail("删除失败：\(error)") }
 
 case "people":
     for p in people.people {
