@@ -176,8 +176,8 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public var inferenceProvider: InferenceProvider = .coreml
     /// 聚类阈值（人数未知时使用，越小分得越细）
     public var clusterThreshold: Float = 0.5
-    public var minDurationOn: Float = 0.5
-    public var minDurationOff: Float = 0.6
+    public var minDurationOn: Float = 0.3
+    public var minDurationOff: Float = 0.5
     /// 声纹匹配阈值
     public var matchThreshold: Double = 0.6
     /// 分离后合并相似簇的声纹相似度阈值（人数未知时使用，0 关闭）

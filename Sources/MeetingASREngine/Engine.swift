@@ -190,7 +190,7 @@ public final class SherpaVAD: VoiceActivityDetector {
 
     public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
         // 每次检测新建实例，避免状态残留；模型很小，开销可忽略
-        let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.6, minSilenceDuration: 0.3,
+        let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.5, minSilenceDuration: 0.3,
                                                     minSpeechDuration: 0.25, windowSize: 512, maxSpeechDuration: 30)
         var config = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
         let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: 60)
