@@ -9,7 +9,8 @@
 | 平台 | macOS 14.2+，仅 Apple Silicon（arm64） |
 | 语言 | Swift（SwiftUI + AppKit + Core Audio） |
 | 推理 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（C API），CPU 运行，无 Python 依赖 |
-| 模型 | Paraformer-zh（ASR）、pyannote segmentation 3.0（切分）、3D-Speaker CAM++（声纹）、CT-Transformer（标点）、Silero VAD |
+| 模型 | Paraformer-zh（ASR）、3D-Speaker CAM++（声纹）、CT-Transformer（标点）、Silero VAD |
+| 流程 | VAD 段驱动，ASR 与声纹并行提取，球面 K-Means 聚类（可复现） |
 
 ## 设计原则
 
@@ -187,7 +188,7 @@ App 只在菜单栏显示图标（不出现在 Dock）。首次启动会显示�
 |---|---|
 | 通用 | 登录时自动启动、全局快捷键、存储目录、打开声纹库 |
 | 采集 | 采集源（仅麦克风 / 仅会议软件 / 两者）、麦克风输入设备、回声消除、会议软件 Bundle ID 列表 |
-| 识别 | 识别模型、识别方式、录音时分离；默认说话人数；高级：聚类阈值、声纹匹配阈值、特征片段数、每人样本上限、推理线程数 |
+| 识别 | 识别模型、识别方式（段流水线 / 先识别再分配 / 按说话人段）、录音时分离；默认说话人数；高级：VAD 与聚类参数、声纹匹配阈值、特征片段数、每人样本上限、推理线程数 |
 | 热词 | 一行一个词（项目名、产品名、人名） |
 
 ---
@@ -248,21 +249,32 @@ App 只在菜单栏显示图标（不出现在 Dock）。首次启动会显示�
 
 ## 识别流程
 
+默认使用**段流水线**（`segmentStream`）：以 Silero VAD 切出的语音段为调度单元，ASR 与声纹提取并行执行。详见 [docs/segment-pipeline.md](docs/segment-pipeline.md)。
+
 ```
-.raw/mic.wav ─┐                         ┌─ 麦克风轨（线上会议）：整轨一人，Silero VAD 切段
-              ├─ 预处理 ─ 16kHz 单声道 ─┤
-.raw/system.wav┘  响度归一              └─ 会议软件轨 / 单轨：pyannote 切分 + CAM++ 声纹 + 聚类
+.raw/mic.wav ─┐
+              ├─ 预处理 ─ 16kHz 单声道、响度归一
+.raw/system.wav┘
                                                      │
-                簇合并：同一人物 / 声纹中心相似 / 发言 <2s 的碎簇 → 并入（人数未指定时）
+          Silero VAD 切段（静音 >0.4s 切开，单段 ≤12s）→ 前补 0.15s、后补 0.1s
                                                      │
-                       分段后处理：同人间隔 <0.5s 合并 · >30s 在静音点切开 · 前后补 0.25s（不越过邻段）· <0.3s 丢弃
+                     ┌───────────────┴───────────────┐
+              ASR Worker（Paraformer）        声纹 Worker（CAM++）
+              文本 + 字级时间戳                <1s 整段 / 1~4s 整段 / >4s 子窗口
+                     └───────────────┬───────────────┘   （子窗口相似度低谷 → 标记混合段）
                                                      │
-                 回声判定：麦克风段与系统轨能量包络高度相关且更弱（相关性极高时只需不更响）→ 丢弃
+      球面 K-Means 聚类（每轨独立，固定种子）：k=min(20,段数) → 迭代合并（相似度 ≥0.38）
+                      → 小簇吸收（<3s）→ 按最终中心重新分配
+                      麦克风轨（线上会议双轨时）跳过聚类，整轨一人
                                                      │
-      先识别再分配（默认）：VAD ∪ 说话人段 → 10~25s 长句块 ASR → 每个字按时间戳归属说话人 → 平滑 → 切段
-      按段识别（备选）：逐段 ASR → 重叠段去重
+      短段（<1s）：相似度 ≥0.25 归簇，否则归 ±2s 内时间最近的同轨说话人
+      混合段：子窗口各自归簇 → 标签平滑（<1.5s 的游程并入邻侧）→ 在切点按字级时间戳拆分
+                                                     │
+                 回声判定：麦克风段与系统轨能量包络高度相关且更弱 → 丢弃
                                                      │
             文本层回声兜底（双轨）：麦克风轨与会议软件轨同时（滞后 ≤1s）同字成片 → 删除
+                                                     │
+          轮次合并：同一说话人、间隔 <1s 的相邻段合并为一轮（标点在轮次上做，上下文更完整）
                                                      │
                        热词纠错 → 英文缩写规范（a s r → ASR）→ CT-Transformer 标点
                                                      │
@@ -273,7 +285,17 @@ App 只在菜单栏显示图标（不出现在 Dock）。首次启动会显示�
                写出 transcript.json / md / srt、speakers/ → 校验 → 删除 .raw/
 ```
 
-**先识别、再分配说话人**：按说话人切出的段往往很短，ASR 缺少上下文，重叠语音还会被两个说话人各识别一次。默认改为按音轨把语音组合成 10~25 秒的长句块识别，再按字级时间戳把每个字分给当时说话的人（重叠处延续上一个字的说话人，夹在同一人中间的 1~2 个字视为边界抖动），落在回声段内的字丢弃。模型不输出字级时间戳时自动退回按段识别（设置 › 识别 中可切换）。
+**为什么以段为单元**：按说话人切出的段与 ASR 的分段彼此独立时，说话人边界和字边界对不齐；分离与识别串行执行时两个 CPU 密集阶段谁也用不满核。改以 VAD 段驱动后，ASR 与声纹并行处理同一段，说话人边界天然与字级时间戳对齐，聚类用固定种子的球面 K-Means 保证同一录音每次结果一致。
+
+**三种识别方式**（设置 › 识别，或 CLI `--mode`）：
+
+| 模式 | 说明 |
+|---|---|
+| `segment-stream` | 默认。VAD 段驱动，ASR ∥ 声纹并行，结果可复现 |
+| `asr-first` | 按音轨组合成 10~25s 长句块识别，再按字级时间戳分配说话人；ASR 上下文最完整 |
+| `segment` | 先分离（pyannote / 固定窗口）再按说话人段逐段识别；兼容旧流程与对比测试 |
+
+模型不输出字级时间戳（FireRedASR-AED）时自动退回按段识别。
 
 **热词**：sherpa-onnx 的热词（contextual biasing）不支持离线 Paraformer / FireRedASR，因此采用后处理纠错——中文热词按拼音近似匹配同长度片段（三字以上允许一个模糊音：平翘舌、n/l、h/f、r/l、前后鼻音），英文热词忽略大小写规范写法。人物库中的姓名自动加入热词。
 
@@ -304,7 +326,15 @@ export MEETINGASR_MODELS=$PWD/Resources/models
 .build/release/meetingasr-cli recognize 会议.m4a                     # 识别整个文件
 .build/release/meetingasr-cli recognize 会议.m4a --from 60 --to 1800 --speakers 4
 .build/release/meetingasr-cli recognize 会议.m4a --asr-model firered-ctc   # 指定识别模型
-.build/release/meetingasr-cli recognize 会议.m4a --mode segment            # 按说话人分段识别（对比用）
+.build/release/meetingasr-cli recognize 会议.m4a --mode asr-first          # 先识别再分配（对比用）
+
+# 参数调优（段流水线模式）
+.build/release/meetingasr-cli recognize 会议.m4a --vad-min-silence 0.4 --merge-similarity 0.38
+
+# M0 评估：参数网格扫描（需准备会议列表文件）
+echo -e "meeting-001\nmeeting-002\nmeeting-003" > meetings.txt
+.build/release/meetingasr-cli sweep meetings.txt > results.csv
+
 .build/release/meetingasr-cli list                                   # 最近会议
 .build/release/meetingasr-cli show 2026-10-14_143000_周会             # 打印 Markdown
 .build/release/meetingasr-cli name 2026-10-14_143000_周会 S2 张三      # 命名（姓名为空则清除）
