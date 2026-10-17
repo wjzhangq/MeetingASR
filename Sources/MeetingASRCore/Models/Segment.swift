@@ -27,6 +27,9 @@ public struct Segment: Codable, Equatable, Sendable {
     public var cluster: String?
     public var speaker: String?
 
+    // 内部元数据（用于流水线中间状态，不持久化到输出）
+    public var metadata: [String: String]?
+
     public init(id: Int, track: TrackKind, start: Double, end: Double, speechStart: Double, speechEnd: Double) {
         self.id = id
         self.track = track

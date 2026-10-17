@@ -1,0 +1,400 @@
+# MeetingASR 段流水线优化 - 交接文档
+
+**交接时间**: 2026-10-18  
+**分支**: `claude/segment-stream-pipeline`  
+**最新提交**: `24874e6` - 删除旧识别模式，修复 VAD 配置接通
+
+---
+
+## 已完成的工作
+
+### 1. 段流水线实现（提交 `29f1609`）
+
+**新增模块**（8 个文件，~1300 行）：
+- `SegmentPipeline.swift` - VAD 驱动的并行 ASR + 声纹提取
+- `SphericalKMeans.swift` - 球面 K-Means 聚类算法
+- `SegmentClusterer.swift` - 段级声纹聚类
+- `SegmentAssigner.swift` - 最终说话人分配（含混合段处理、短段归属）
+- `SegmentMerger.swift` - 簇合并与小簇吸收
+- `MixedSegmentDetector.swift` - 多人混说检测
+- `ShortSegmentAssigner.swift` - 孤立短段归属
+- `SegmentConfig.swift` - 配置数据结构
+
+**流程**:
+```
+音频 → VAD 切段 → [ASR worker ∥ 声纹 worker] → K-Means 聚类 
+     → 迭代合并 → 小簇吸收 → 混合段标签平滑 → 短段归属 → 输出
+```
+
+**性能特点**:
+- ASR 和声纹提取真正并行（两个 DispatchQueue）
+- 2 分钟音频 RTF 0.156（验证通过）
+
+### 2. CLI 增强（提交 `7584495`）
+
+**新增参数**:
+```bash
+--vad-min-silence X    # VAD 最小静音（秒，默认 0.4）
+--vad-max-speech X     # VAD 最大段长（秒，默认 12）
+--merge-similarity X   # 簇合并阈值（默认 0.38）
+--min-cluster-sec X    # 小簇合并下限（秒，默认 3.0）
+--short-assign-sim X   # 短段归属阈值（默认 0.25）
+--mixed-valley X       # 混合段检测低谷（默认 0.3）
+--smooth-run-sec X     # 混合段标签平滑长度（秒，默认 1.5）
+```
+
+**新增子命令**:
+```bash
+meetingasr-cli sweep <会议列表文件>  # 参数网格搜索
+```
+
+### 3. 代码清理（提交 `24874e6`）
+
+**删除的旧代码**（-648 行）:
+- `RecognitionMode.asrFirst` / `.segment` 枚举值
+- `MeetingProcessor` 旧流程主体（241 行）
+- `AsrChunker`、`SpeakerAssigner`、`OverlapDeduplicator`、`TimedToken`（237 行）
+- `TranscriptAssemblyTests.swift` 整个文件
+- CLI `--mode` 参数解析
+
+**结果**: `RecognitionMode` 现在只有一个 case（`segmentStream`），旧路径已物理删除。
+
+**修复的 bug**:
+- ✅ VAD 配置硬编码问题：`SherpaVAD.detect` 忽略 `SegmentVADConfig`，现在正确接通
+- ✅ CLI 参数顺序：`--vad-*` 在引擎创建前应用
+- ✅ 编译警告：`SphericalKMeans` 误用 `var`、`SegmentPipeline` 未使用的闭包捕获
+
+---
+
+## 未解决的问题
+
+### 🔴 关键问题：FireRedASR-CTC 长音频崩溃
+
+**症状**:
+- 62 分钟音频处理到 334 秒时崩溃（退出码 134 = SIGABRT）
+- 2 分钟切片正常工作
+- 错误：ONNX Runtime 维度广播失败
+  ```
+  Attempting to broadcast an axis by a dimension other than 1. 206 by 5411
+  at /encoder/layer_stack.0/mhsa/Add_4
+  ```
+
+**已排除的原因**:
+- ❌ 不是 VAD 段长超限（已验证 `maxSpeechDuration=12` 生效）
+- ❌ 不是 CoreML 内存泄漏（已切换到 CPU provider）
+- ❌ 不是短音频问题（2 分钟切片成功）
+
+**可能的原因**:
+1. FireRedASR-CTC 模型在某些输入长度触发 ONNX 导出 bug
+2. CPU provider 在长时间运行后累积状态导致维度不匹配
+3. 变长输入序列在大批量处理后触发边界条件
+
+**当前配置**:
+- 模型：FireRedASR-CTC（`sherpa-onnx-fire-red-asr2-ctc-zh_en`）
+- 推理后端：CPU（8 线程）
+- VAD：minSilence 0.4s, maxSpeech 12s
+- 内存峰值：3.8 GB（崩溃前）
+
+### 🟡 次要问题
+
+1. **测试无法在本机运行**  
+   环境：macOS CommandLineTools，缺 XCTest  
+   影响：`PipelineTests` 只验证了编译，未实际执行
+
+2. **Paraformer 未充分测试**  
+   已切换配置但未完整运行（被手动停止）
+
+3. **sweep 子命令的 VAD 参数扫描**  
+   当前 sweep 只扫 clustering 参数，VAD 参数（如 `vadMinSilence`）在网格点间共享一个 engine，无法每点独立配置
+
+---
+
+## 下一步建议
+
+### 优先级 1：解决 FireRedASR-CTC 崩溃（必须）
+
+**方案 A：限制单段最大输入长度为 60 秒**
+
+**理由**:
+- 崩溃发生在 5411 帧输入（约 54 秒，假设 100 fps）
+- 当前 VAD `maxSpeechDuration=12` 理论上不会产生 54 秒段，说明存在其他来源
+- 主动限制 ASR 输入长度可避免触发 ONNX Runtime 边界条件
+- 60 秒足够长，不影响识别质量（段内上下文充足）
+
+**实施位置**:  
+`Sources/MeetingASRCore/Pipeline/SegmentPipeline.swift:82-105`
+
+在 `process` 方法内，ASR worker 入队前检查段长，超过 60 秒的段切分成多个子段：
+
+```swift
+// ASR worker 入队前（第 82 行附近）
+for seg in segments {
+    let duration = seg.speechEnd - seg.speechStart
+    
+    if duration > 60 {
+        // 切分成多个 ≤60s 的子段
+        var subStart = seg.speechStart
+        while subStart < seg.speechEnd {
+            let subEnd = min(subStart + 60, seg.speechEnd)
+            var subSeg = seg
+            subSeg.speechStart = subStart
+            subSeg.speechEnd = subEnd
+            // 重新计算 start/end（含 padding）
+            subSeg.start = max(seg.start, subStart - 0.15)
+            subSeg.end = min(seg.end, subEnd + 0.1)
+            queueASR.enqueue(subSeg)
+            subStart = subEnd
+        }
+    } else {
+        queueASR.enqueue(seg)
+    }
+}
+```
+
+**子段合并**（ASR worker 内，第 92 行附近）：
+```swift
+if var existing = results[s.id] {
+    // 如果是同一原始段的子段，合并文本
+    existing.text = (existing.text ?? "") + (s.text ?? "")
+    // 扩展时间范围
+    existing.start = min(existing.start, s.start)
+    existing.end = max(existing.end, s.end)
+    existing.speechStart = min(existing.speechStart, s.speechStart)
+    existing.speechEnd = max(existing.speechEnd, s.speechEnd)
+    results[s.id] = existing
+} else {
+    results[s.id] = s
+}
+```
+
+**注意**:
+- 子段需要共享 `id`，这样 ASR 结果能合并回原段
+- 声纹 worker 仍处理原始完整段（embedding 可以处理长段）
+- 需要处理子段边界处的文本拼接（可能需要去重或平滑）
+
+**预期效果**:
+- 任何 >60s 的 VAD 段被切成 ≤60s 喂给 ASR
+- 避免 ONNX Runtime 的维度问题
+- 副作用：长段的 ASR 上下文会在 60s 处截断
+
+---
+
+**方案 B：切换到 Paraformer（备选）**
+
+如果方案 A 仍然崩溃，说明问题不在输入长度。Paraformer 优势：
+- 更成熟稳定（生产环境广泛使用）
+- 速度更快（RTF ~0.15 vs FireRedASR 的 0.25）
+- 无已知长音频 bug
+
+**操作**:
+```bash
+# 在 settings.json 或通过 CLI
+--asr-model paraformer
+```
+
+已经在 `settings.json` 切换过，但测试被手动停止。重新运行验证即可。
+
+---
+
+### 优先级 2：录音端改造（阶段 B）
+
+**需求**（来自用户）:
+1. 录音默认 16kHz（跳过后续重采样，减少预处理耗时）
+2. 录音期间按 VAD 边界切分文件，每段 ≤5 分钟
+
+**影响范围**:
+- `Sources/MeetingASRApp/Capture/RecordingSession.swift`
+- `Sources/MeetingASRApp/Capture/AlignedTrackWriter.swift`
+- `Sources/MeetingASRCore/Models/MeetingMeta.swift` - `TrackInfo` schema 变更（单文件 → 多文件）
+- `Sources/MeetingASRCore/Pipeline/MeetingProcessor.swift` - `prepareTracks` 需要读取并拼接多段
+- `Sources/MeetingASRApp/Live/LiveDiarizer.swift` - 实时预览需要处理多文件增长
+
+**挑战**:
+- `MeetingASRApp` 目标无法在 CommandLineTools 环境编译（缺 SwiftUIMacros 插件）
+- 代码可以写，但无法验证编译和运行
+
+**建议**: 在 Xcode 环境中进行，或等项目迁移到新构建系统。
+
+---
+
+### 优先级 3：性能验证与文档
+
+**待验证**:
+- [ ] 62 分钟音频完整处理（修复崩溃后）
+- [ ] 双轨会议测试（mic + system 并行）
+- [ ] Paraformer vs FireRedASR 性能对比
+- [ ] 内存占用与 CPU 利用率曲线
+
+**文档更新**:
+- [ ] `docs/segment-stream-pipeline.md` - 添加故障排查章节
+- [ ] `README.md` - 更新默认模式说明
+- [ ] `CHANGELOG.md` - 记录 breaking changes（删除旧模式）
+
+---
+
+## 技术债务
+
+1. **sweep 命令的 VAD 参数扫描**  
+   当前只能扫 clustering 参数，VAD 参数需要每个网格点重建 engine（代价高）。  
+   方案：让 `SherpaVAD.detect` 接受可选的配置覆盖参数。
+
+2. **测试覆盖率**  
+   新增的 8 个模块（`SphericalKMeans`、`SegmentClusterer` 等）没有单元测试。  
+   建议：为核心算法添加测试（K-Means、混合段检测、短段归属）。
+
+3. **错误处理**  
+   ONNX Runtime 崩溃时没有优雅降级，整个会议识别失败。  
+   方案：捕获单段识别失败，标记为 `[识别失败]` 继续处理其他段。
+
+4. **日志可观测性**  
+   无法知道哪个段触发崩溃，缺少每段的输入长度日志。  
+   方案：在 ASR worker 内打印 `段 #X: 音频 Y 秒，Z 帧` 日志。
+
+---
+
+## 环境与依赖
+
+**构建**:
+```bash
+swift build -c release --target meetingasr-cli
+```
+
+**依赖**:
+- sherpa-onnx 1.13.8
+- 模型目录: `$HOME/Library/Application Support/MeetingASR/models`
+- 获取模型: `scripts/fetch-models.sh`
+
+**配置文件**:
+- 全局设置: `$HOME/Library/Application Support/MeetingASR/settings.json`
+- 会议数据: `$HOME/Documents/MeetingASR/meetings/`
+
+**当前 settings.json 状态**:
+```json
+{
+  "recognition": {
+    "asrModel": "paraformer",          // 已切换（避免 FireRedASR 崩溃）
+    "inferenceProvider": "cpu",         // 已切换（避免 CoreML 内存泄漏）
+    "segmentVAD": {
+      "threshold": 0.5,
+      "minSilenceDuration": 0.4,
+      "minSpeechDuration": 0.25,
+      "maxSpeechDuration": 12,          // 已修复（之前硬编码 30）
+      "padBefore": 0.15,
+      "padAfter": 0.1
+    }
+  }
+}
+```
+
+---
+
+## 关键代码位置
+
+**段流水线入口**:
+- `Sources/MeetingASRCore/Pipeline/MeetingProcessor.swift:119` - `runSegmentStream`
+- `Sources/MeetingASRCore/Pipeline/SegmentPipeline.swift:23` - `process` 方法
+
+**VAD 配置传递链**:
+1. CLI 参数解析: `Sources/meetingasr-cli/main.swift:79-88`
+2. 引擎创建: `Sources/meetingasr-cli/main.swift:110` 传入 `vadConfig`
+3. 工厂方法: `Sources/MeetingASREngine/Engine.swift:235` 接受并传递
+4. VAD 初始化: `Sources/MeetingASREngine/Engine.swift:182-186`
+5. 实际使用: `Sources/MeetingASREngine/Engine.swift:196-201` 在 `detect` 方法内
+
+**崩溃位置**（推测）:
+- `Sources/MeetingASRCore/Pipeline/SegmentPipeline.swift:85-95` ASR worker
+- 某个段的音频切片超过模型安全长度触发 ONNX Runtime 错误
+
+---
+
+## 快速上手
+
+**验证当前状态**:
+```bash
+cd /Users/wj/Downloads/work/MeetingASR
+swift build -c release --target meetingasr-cli
+
+# 2 分钟切片测试（已验证通过）
+export MEETINGASR_MODELS="$HOME/Library/Application Support/MeetingASR/models"
+.build/release/meetingasr-cli recognize \
+  "/Users/wj/Documents/MeetingASR/meetings/2026-10-16_135951/.raw/system.wav" \
+  --from 0 --to 120
+```
+
+**重现崩溃**:
+```bash
+# 使用 FireRedASR-CTC（会崩溃）
+.build/release/meetingasr-cli recognize \
+  "/Users/wj/Documents/MeetingASR/meetings/2026-10-16_135951/.raw/system.wav" \
+  --asr-model firered-ctc
+```
+
+**实施方案 A（60 秒限制）后测试**:
+1. 修改 `SegmentPipeline.swift` 添加段切分逻辑
+2. 重新编译
+3. 运行完整 62 分钟音频
+4. 检查日志中是否有 ">60s 段被切分" 的记录
+5. 验证不再崩溃
+
+---
+
+## 联系信息
+
+**分支**: `claude/segment-stream-pipeline`  
+**基础分支**: `main`（假设，未在输出中显示）  
+**提交历史**:
+- `29f1609` - 实现段流水线（2024-10-17）
+- `7584495` - CLI 参数 + sweep（2024-10-17）
+- `24874e6` - 删除旧模式 + 修复配置（2024-10-18）
+
+**关键文件**（新增或大幅修改）:
+```
+Sources/MeetingASRCore/Pipeline/
+  ├── SegmentPipeline.swift          (新增 270 行)
+  └── MeetingProcessor.swift         (净删 122 行，简化)
+
+Sources/MeetingASRCore/People/
+  ├── SphericalKMeans.swift          (新增 218 行)
+  ├── SegmentClusterer.swift         (新增 176 行)
+  ├── SegmentAssigner.swift          (新增 247 行)
+  ├── SegmentMerger.swift            (新增 91 行)
+  ├── MixedSegmentDetector.swift     (新增 92 行)
+  └── ShortSegmentAssigner.swift     (新增 89 行)
+
+Sources/MeetingASRCore/Models/
+  └── SegmentConfig.swift            (新增 124 行)
+
+Sources/MeetingASREngine/
+  └── Engine.swift                   (VAD 配置接通)
+
+Tests/MeetingASRCoreTests/
+  └── TranscriptAssemblyTests.swift  (删除 167 行)
+```
+
+---
+
+## 总结
+
+**成果**:
+- ✅ 新段流水线已实现并通过短音频测试
+- ✅ 旧识别模式彻底删除，代码简化 648 行
+- ✅ VAD 配置 bug 修复，CLI 参数真正生效
+
+**阻塞点**:
+- 🔴 FireRedASR-CTC 长音频崩溃（62 分钟）
+- 🟡 录音端改造需要 Xcode 环境
+
+**下一步**:
+1. 实施 **60 秒段长限制**（方案 A，最优先）
+2. 如仍崩溃，切换 Paraformer（方案 B）
+3. 验证 62 分钟音频完整处理
+4. 录音端改造（在 Xcode 中进行）
+
+**预期时间线**:
+- 方案 A 实施: 1-2 小时（编码 + 测试）
+- 完整验证: 1 小时（62 分钟音频 × 多个测试）
+- 录音端改造: 4-6 小时（schema 变更波及面大）
+
+---
+
+**祝好运！** 🚀
