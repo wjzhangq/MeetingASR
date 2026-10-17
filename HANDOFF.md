@@ -66,34 +66,40 @@ meetingasr-cli sweep <会议列表文件>  # 参数网格搜索
 
 ---
 
-## 未解决的问题
+## 已解决的问题
 
-### 🔴 关键问题：FireRedASR-CTC 长音频崩溃
+### ✅ 关键问题：FireRedASR-CTC 长音频崩溃（已修复）
 
-**症状**:
+**提交**: `4edd17c` - 2026-10-18  
+**详细报告**: `docs/fix-firered-crash.md`
+
+**原始症状**:
 - 62 分钟音频处理到 334 秒时崩溃（退出码 134 = SIGABRT）
-- 2 分钟切片正常工作
 - 错误：ONNX Runtime 维度广播失败
   ```
   Attempting to broadcast an axis by a dimension other than 1. 206 by 5411
   at /encoder/layer_stack.0/mhsa/Add_4
   ```
 
-**已排除的原因**:
-- ❌ 不是 VAD 段长超限（已验证 `maxSpeechDuration=12` 生效）
-- ❌ 不是 CoreML 内存泄漏（已切换到 CPU provider）
-- ❌ 不是短音频问题（2 分钟切片成功）
+**根本原因**:
+VAD 实际产生的某些段超过 60 秒（最长达 216 秒），触发 FireRedASR-CTC 模型在 ONNX Runtime 层的维度广播错误。
 
-**可能的原因**:
-1. FireRedASR-CTC 模型在某些输入长度触发 ONNX 导出 bug
-2. CPU provider 在长时间运行后累积状态导致维度不匹配
-3. 变长输入序列在大批量处理后触发边界条件
+**修复方案**:
+实施 60 秒段长限制：
+- 在 ASR 入队前检测段长，超过 60s 自动切分为多个子段
+- 子段独立识别后自动合并回原段
+- 声纹处理仍使用完整段（无需切分）
+- 添加日志记录切分操作和超长输入警告
 
-**当前配置**:
-- 模型：FireRedASR-CTC（`sherpa-onnx-fire-red-asr2-ctc-zh_en`）
-- 推理后端：CPU（8 线程）
-- VAD：minSilence 0.4s, maxSpeech 12s
-- 内存峰值：3.8 GB（崩溃前）
+**验证结果**:
+- ✅ 62 分钟音频完整处理成功（RTF 0.211，788.9s）
+- ✅ 10+ 个长段（最长 216s）正确切分和合并
+- ✅ 无 ONNX Runtime 错误，无崩溃
+- ✅ 输出：316 段，2 位说话人，文本连贯
+
+---
+
+## 未解决的问题
 
 ### 🟡 次要问题
 
@@ -111,88 +117,15 @@ meetingasr-cli sweep <会议列表文件>  # 参数网格搜索
 
 ## 下一步建议
 
-### 优先级 1：解决 FireRedASR-CTC 崩溃（必须）
+### 优先级 1：性能验证与对比测试
 
-**方案 A：限制单段最大输入长度为 60 秒**
+**待验证**:
+- [ ] Paraformer vs FireRedASR 性能对比（准确率、速度、内存）
+- [ ] 双轨会议测试（mic + system 并行）
+- [ ] 内存占用与 CPU 利用率曲线
+- [ ] 子段边界处 token 时间戳连续性检查
 
-**理由**:
-- 崩溃发生在 5411 帧输入（约 54 秒，假设 100 fps）
-- 当前 VAD `maxSpeechDuration=12` 理论上不会产生 54 秒段，说明存在其他来源
-- 主动限制 ASR 输入长度可避免触发 ONNX Runtime 边界条件
-- 60 秒足够长，不影响识别质量（段内上下文充足）
-
-**实施位置**:  
-`Sources/MeetingASRCore/Pipeline/SegmentPipeline.swift:82-105`
-
-在 `process` 方法内，ASR worker 入队前检查段长，超过 60 秒的段切分成多个子段：
-
-```swift
-// ASR worker 入队前（第 82 行附近）
-for seg in segments {
-    let duration = seg.speechEnd - seg.speechStart
-    
-    if duration > 60 {
-        // 切分成多个 ≤60s 的子段
-        var subStart = seg.speechStart
-        while subStart < seg.speechEnd {
-            let subEnd = min(subStart + 60, seg.speechEnd)
-            var subSeg = seg
-            subSeg.speechStart = subStart
-            subSeg.speechEnd = subEnd
-            // 重新计算 start/end（含 padding）
-            subSeg.start = max(seg.start, subStart - 0.15)
-            subSeg.end = min(seg.end, subEnd + 0.1)
-            queueASR.enqueue(subSeg)
-            subStart = subEnd
-        }
-    } else {
-        queueASR.enqueue(seg)
-    }
-}
-```
-
-**子段合并**（ASR worker 内，第 92 行附近）：
-```swift
-if var existing = results[s.id] {
-    // 如果是同一原始段的子段，合并文本
-    existing.text = (existing.text ?? "") + (s.text ?? "")
-    // 扩展时间范围
-    existing.start = min(existing.start, s.start)
-    existing.end = max(existing.end, s.end)
-    existing.speechStart = min(existing.speechStart, s.speechStart)
-    existing.speechEnd = max(existing.speechEnd, s.speechEnd)
-    results[s.id] = existing
-} else {
-    results[s.id] = s
-}
-```
-
-**注意**:
-- 子段需要共享 `id`，这样 ASR 结果能合并回原段
-- 声纹 worker 仍处理原始完整段（embedding 可以处理长段）
-- 需要处理子段边界处的文本拼接（可能需要去重或平滑）
-
-**预期效果**:
-- 任何 >60s 的 VAD 段被切成 ≤60s 喂给 ASR
-- 避免 ONNX Runtime 的维度问题
-- 副作用：长段的 ASR 上下文会在 60s 处截断
-
----
-
-**方案 B：切换到 Paraformer（备选）**
-
-如果方案 A 仍然崩溃，说明问题不在输入长度。Paraformer 优势：
-- 更成熟稳定（生产环境广泛使用）
-- 速度更快（RTF ~0.15 vs FireRedASR 的 0.25）
-- 无已知长音频 bug
-
-**操作**:
-```bash
-# 在 settings.json 或通过 CLI
---asr-model paraformer
-```
-
-已经在 `settings.json` 切换过，但测试被手动停止。重新运行验证即可。
+**建议**: 使用不同音频样本（单人、多人、高重叠）全面验证段切分方案的鲁棒性。
 
 ---
 
@@ -379,22 +312,22 @@ Tests/MeetingASRCoreTests/
 - ✅ 新段流水线已实现并通过短音频测试
 - ✅ 旧识别模式彻底删除，代码简化 648 行
 - ✅ VAD 配置 bug 修复，CLI 参数真正生效
+- ✅ **FireRedASR-CTC 长音频崩溃已修复（60s 段长限制方案）**
+- ✅ **62 分钟音频完整处理验证通过（RTF 0.211）**
 
 **阻塞点**:
-- 🔴 FireRedASR-CTC 长音频崩溃（62 分钟）
-- 🟡 录音端改造需要 Xcode 环境
+- 🟡 录音端改造需要 Xcode 环境（优先级降低）
 
 **下一步**:
-1. 实施 **60 秒段长限制**（方案 A，最优先）
-2. 如仍崩溃，切换 Paraformer（方案 B）
-3. 验证 62 分钟音频完整处理
-4. 录音端改造（在 Xcode 中进行）
+1. 性能验证与对比测试（Paraformer vs FireRedASR）
+2. 双轨会议测试
+3. 录音端改造（在 Xcode 中进行）
 
 **预期时间线**:
-- 方案 A 实施: 1-2 小时（编码 + 测试）
-- 完整验证: 1 小时（62 分钟音频 × 多个测试）
+- 性能对比测试: 2-3 小时
+- 双轨会议验证: 1 小时
 - 录音端改造: 4-6 小时（schema 变更波及面大）
 
 ---
 
-**祝好运！** 🚀
+**修复完成！** 🎉
