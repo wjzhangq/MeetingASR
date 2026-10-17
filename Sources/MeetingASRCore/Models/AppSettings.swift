@@ -59,19 +59,11 @@ public struct HotkeySetting: Codable, Sendable, Hashable {
 
 /// 识别方式。
 public enum RecognitionMode: String, Codable, Sendable, CaseIterable {
-    /// 先按长句识别，再按字级时间戳分配说话人（上下文完整、重叠语音只识别一次）
-    case asrFirst
-    /// 先分离，再按说话人段逐段识别
-    case segment
-    /// VAD 切段 + 并行 ASR/声纹 + 球面 K-Means 聚类（推荐）
+    /// VAD 切段 + 并行 ASR/声纹 + 球面 K-Means 聚类
     case segmentStream
 
     public var displayName: String {
-        switch self {
-        case .asrFirst: return "先识别，再分配说话人"
-        case .segment: return "按说话人分段识别"
-        case .segmentStream: return "流式分段处理（推荐）"
-        }
+        "段流水线（VAD 驱动）"
     }
 }
 

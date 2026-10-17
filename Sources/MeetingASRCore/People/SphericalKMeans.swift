@@ -165,10 +165,10 @@ public struct SegmentClusterer: Sendable {
         }
         
         let kmeans = SphericalKMeans()
-        var assignments = kmeans.cluster(items, k: k, config: config)
-        
+        let assignments = kmeans.cluster(items, k: k, config: config)
+
         // 去空簇并重新编号
-        var usedClusters = Set(assignments)
+        let usedClusters = Set(assignments)
         var clusterMap: [Int: String] = [:]
         for (i, c) in usedClusters.sorted().enumerated() {
             clusterMap[c] = "C\(i)"

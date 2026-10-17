@@ -99,7 +99,7 @@ public final class SegmentPipeline {
         
         // 声纹 worker
         group.enter()
-        DispatchQueue.global(qos: .userInitiated).async { [config, sampleRate] in
+        DispatchQueue.global(qos: .userInitiated).async { [sampleRate] in
             defer { group.leave() }
             while let seg = queueEmb.dequeue() {
                 var s = seg

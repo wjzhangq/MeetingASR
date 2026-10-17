@@ -178,10 +178,12 @@ public final class SherpaEmbedder: SpeakerEmbedder {
 /// Silero VAD。
 public final class SherpaVAD: VoiceActivityDetector {
     private let paths: ModelPaths
+    private let vadConfig: SegmentVADConfig
 
-    public init(paths: ModelPaths) throws {
+    public init(paths: ModelPaths, config: SegmentVADConfig = SegmentVADConfig()) throws {
         guard FileManager.default.fileExists(atPath: paths.vad.path) else { throw EngineError.modelMissing(paths.vad.path) }
         self.paths = paths
+        self.vadConfig = config
     }
 
     public func detect(_ samples: [Float]) -> [ClosedRange<Double>] {
@@ -190,10 +192,17 @@ public final class SherpaVAD: VoiceActivityDetector {
 
     public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
         // 每次检测新建实例，避免状态残留；模型很小，开销可忽略
-        let silero = sherpaOnnxSileroVadModelConfig(model: paths.vad.path, threshold: 0.5, minSilenceDuration: 0.3,
-                                                    minSpeechDuration: 0.25, windowSize: 512, maxSpeechDuration: 30)
+        let silero = sherpaOnnxSileroVadModelConfig(
+            model: paths.vad.path,
+            threshold: vadConfig.threshold,
+            minSilenceDuration: vadConfig.minSilenceDuration,
+            minSpeechDuration: vadConfig.minSpeechDuration,
+            windowSize: 512,
+            maxSpeechDuration: vadConfig.maxSpeechDuration)
         var config = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
-        let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: 60)
+        // 缓冲区要容得下最长段，否则内部 circular buffer 反复扩容
+        let bufferSec = max(60, vadConfig.maxSpeechDuration * 4)
+        let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: bufferSec)
         var out: [ClosedRange<Double>] = []
         func collect() {
             while !vad.isEmpty() {
@@ -232,13 +241,14 @@ public enum SherpaEngineFactory {
     /// - Parameter provider: 推理后端，"cpu" 或 "coreml"（神经引擎）
     /// - Parameter diarizationStrategy: 说话人分离策略
     public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer,
-                           provider: String = "cpu", diarizationStrategy: DiarizationStrategy = .pyannote) throws -> EngineSet {
+                           provider: String = "cpu", diarizationStrategy: DiarizationStrategy = .pyannote,
+                           vadConfig: SegmentVADConfig = SegmentVADConfig()) throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
         let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
         let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads, provider: provider)
         let embedder = try SherpaEmbedder(paths: paths, numThreads: numThreads, provider: provider)
-        let vad = try SherpaVAD(paths: paths)
+        let vad = try SherpaVAD(paths: paths, config: vadConfig)
 
         let diarizer: SpeakerDiarizer
         switch diarizationStrategy {
