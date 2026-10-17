@@ -301,3 +301,59 @@ public struct SpeakerAssigner: Sendable {
         t < s.start ? s.start - t : (t > s.end ? t - s.end : 0)
     }
 }
+
+/// 轮次合并：同一说话人、间隔 < gap 的相邻段合并为一轮。
+public enum TurnAssembler {
+    /// 将段合并为轮次，返回 RecognizedPiece。
+    public static func turns(_ segments: [Segment], gap: Double) -> [RecognizedPiece] {
+        guard !segments.isEmpty else { return [] }
+        
+        // 按时间排序
+        let sorted = segments.sorted { $0.start < $1.start }
+        
+        var pieces: [RecognizedPiece] = []
+        var current: [Segment] = []
+        
+        func flush() {
+            guard let first = current.first else { return }
+            let speaker = first.speaker ?? first.cluster ?? "unknown"
+            let track = first.track
+            let start = current.map(\.start).min() ?? first.start
+            let end = current.map(\.end).max() ?? first.end
+            
+            // 合并文本和 tokens
+            let allTokens = current.flatMap(\.tokens).sorted { $0.start < $1.start }
+            let text = TokenText.join(allTokens)
+            
+            pieces.append(RecognizedPiece(
+                speaker: speaker,
+                track: track,
+                start: start,
+                end: end,
+                text: text,
+                tokens: allTokens
+            ))
+            current.removeAll()
+        }
+        
+        for seg in sorted {
+            guard !seg.isEcho else { continue }
+            
+            let speaker = seg.speaker ?? seg.cluster ?? "unknown"
+            
+            if let last = current.last {
+                let lastSpeaker = last.speaker ?? last.cluster ?? "unknown"
+                let gapBetween = seg.start - last.end
+                
+                if speaker != lastSpeaker || gapBetween > gap || seg.track != last.track {
+                    flush()
+                }
+            }
+            
+            current.append(seg)
+        }
+        
+        flush()
+        return pieces
+    }
+}

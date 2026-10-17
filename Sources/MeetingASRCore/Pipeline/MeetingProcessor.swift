@@ -477,4 +477,207 @@ public final class MeetingProcessor {
     }
 
     static func round2(_ x: Double) -> Double { (x * 100).rounded() / 100 }
+    
+    // MARK: - Segment Stream Mode
+    
+    private func runSegmentStream(
+        _ meeting: MeetingPaths,
+        meta: MeetingMeta,
+        cancel: CancellationFlag,
+        progress: @escaping (ProcessingProgress) -> Void
+    ) throws -> Transcript {
+        let rec = options.recognition
+        
+        // 1. 预处理
+        progress(.at(.preprocess, 0))
+        let tracks = try prepareTracks(meeting, meta: meta, cancel: cancel) { progress(.at(.preprocess, $0)) }
+        guard !tracks.isEmpty else { throw ProcessingError.noAudio }
+        let duration = tracks.map { $0.offset + $0.reader.durationSec }.max() ?? 0
+        
+        // 2. VAD 分段 + 并行 ASR/声纹
+        progress(.at(.diarization, 0))
+        var allSegments: [Segment] = []
+        let twoTrack = tracks.contains { $0.kind == .mic } && tracks.contains { $0.kind == .system }
+        
+        for (ti, track) in tracks.enumerated() {
+            try cancel.check()
+            let samples = track.reader.readAllMono()
+            
+            // VAD 切段
+            let vadRanges = engines.vad.detect(samples)
+            var segments = vadRanges.enumerated().map { idx, range -> Segment in
+                let padBefore = rec.segmentVAD.padBefore
+                let padAfter = rec.segmentVAD.padAfter
+                let speechStart = range.lowerBound
+                let speechEnd = range.upperBound
+                let start = max(0, speechStart - padBefore)
+                let end = min(Double(samples.count) / Double(Self.sr), speechEnd + padAfter)
+                
+                return Segment(
+                    id: idx,
+                    track: track.kind,
+                    start: start + track.offset,
+                    end: end + track.offset,
+                    speechStart: speechStart + track.offset,
+                    speechEnd: speechEnd + track.offset
+                )
+            }
+            
+            // 并行 ASR + 声纹
+            let pipeline = SegmentPipeline(config: rec.segmentClustering, sampleRate: Self.sr)
+            segments = pipeline.process(segments, samples: samples, recognizer: engines.recognizer, embedder: engines.embedder)
+            
+            allSegments.append(contentsOf: segments)
+            progress(.at(.diarization, (Double(ti) + 0.8) / Double(tracks.count)))
+        }
+        
+        // 3. 聚类
+        progress(.at(.recognition, 0))
+        let clusterer = SegmentClusterer(config: rec.segmentClustering)
+        let assigner = SegmentAssigner(config: rec.segmentClustering)
+        
+        var segmentsByTrack: [TrackKind: [Segment]] = [:]
+        for track in Set(allSegments.map(\.track)) {
+            var trackSegs = allSegments.filter { $0.track == track }
+            
+            if twoTrack && track == .mic {
+                for i in trackSegs.indices {
+                    trackSegs[i].cluster = "mic-speaker"
+                }
+            } else {
+                trackSegs = clusterer.cluster(trackSegs)
+                trackSegs = assigner.assignShortSegments(trackSegs)
+                trackSegs = assigner.splitMixedSegments(trackSegs)
+            }
+            
+            segmentsByTrack[track] = trackSegs
+        }
+        allSegments = segmentsByTrack.values.flatMap { $0 }
+        
+        // 4. 回声过滤
+        if twoTrack, let mic = tracks.first(where: { $0.kind == .mic }), let sys = tracks.first(where: { $0.kind == .system }) {
+            for i in allSegments.indices where allSegments[i].track == .mic {
+                let seg = allSegments[i]
+                let a = read(mic, seg.start, seg.end)
+                let b = read(sys, seg.start, seg.end)
+                allSegments[i].isEcho = options.echo.isEcho(mic: a, system: b, micGain: mic.gain, systemGain: sys.gain)
+            }
+        }
+        
+        // 5. 分配说话人标签
+        var labels: [String: String] = [:]
+        for seg in allSegments.sorted(by: { $0.start < $1.start }) where !seg.isEcho {
+            if let cluster = seg.cluster, labels[cluster] == nil {
+                labels[cluster] = "S\(labels.count + 1)"
+            }
+        }
+        
+        for i in allSegments.indices {
+            if let cluster = allSegments[i].cluster {
+                allSegments[i].speaker = labels[cluster]
+            }
+        }
+        
+        let trackOfSpeaker = Dictionary(
+            allSegments.compactMap { seg in seg.speaker.map { ($0, seg.track) } },
+            uniquingKeysWith: { a, _ in a }
+        )
+        
+        // 6. 轮次合并
+        progress(.at(.recognition, 0.3))
+        var pieces = TurnAssembler.turns(allSegments, gap: rec.segmentClustering.turnMergeGap)
+        if twoTrack { pieces = options.textEcho.filter(pieces) }
+        
+        // 7. 热词 + 标点
+        progress(.at(.recognition, 0.6))
+        let corrector = HotwordCorrector(hotwords: options.hotwords.adding(people.allNames))
+        let acronyms = AcronymNormalizer()
+        let out: [TranscriptSegment] = pieces.map { pc in
+            var text = acronyms.normalize(corrector.correct(pc.text))
+            if let p = engines.punctuator { text = acronyms.normalize(p.punctuate(text)) }
+            let tokens = acronyms.normalize(tokens: corrector.correct(tokens: pc.tokens))
+                .map { TranscriptToken(t: $0.t, start: Self.round2($0.start)) }
+            return TranscriptSegment(
+                speaker: pc.speaker,
+                start: Self.round2(pc.start),
+                end: Self.round2(pc.end),
+                text: text,
+                tokens: tokens.isEmpty ? nil : tokens
+            )
+        }
+        
+        // 8. 特征片段与人物匹配
+        progress(.at(.speakerID, 0))
+        let spoken = Set(out.map(\.speaker))
+        let speakerIDs = labels.values.filter { spoken.contains($0) }.sorted(by: Self.labelOrder)
+        try FileManager.default.createDirectory(at: meeting.speakersDir, withIntermediateDirectories: true)
+        
+        let asrSegments = allSegments.map { seg -> ASRSegment in
+            ASRSegment(
+                speaker: seg.speaker ?? "unknown",
+                track: seg.track,
+                start: seg.start,
+                end: seg.end,
+                cropStart: seg.start,
+                cropEnd: seg.end
+            )
+        }
+        
+        var records: [SpeakerRecord] = []
+        for (i, sid) in speakerIDs.enumerated() {
+            try cancel.check()
+            let segs = asrSegments.filter { $0.speaker == sid }
+            if let r = try extractSpeaker(sid, track: trackOfSpeaker[sid] ?? .file, segments: segs, tracks: tracks, meeting: meeting, duration: duration) {
+                records.append(r)
+            }
+            progress(.at(.speakerID, 0.8 * Double(i + 1) / Double(max(1, speakerIDs.count))))
+        }
+        
+        let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
+        let result = matcher.match(speakers: records.filter { !$0.embedding.isEmpty }.map { ($0.id, $0.embedding) }, people: people.people)
+        
+        var speakers: [TranscriptSpeaker] = speakerIDs.map { TranscriptSpeaker(id: $0, track: trackOfSpeaker[$0] ?? .file) }
+        for i in records.indices {
+            records[i].bestMatch = result.best[records[i].id]
+            guard let m = result.assigned[records[i].id], let person = people.person(id: m.personId) else { continue }
+            if let si = speakers.firstIndex(where: { $0.id == records[i].id }) {
+                speakers[si].personId = person.id
+                speakers[si].name = person.name
+                speakers[si].source = .auto
+            }
+            try people.addSample(
+                personId: person.id,
+                meeting: meeting.name,
+                speaker: records[i].id,
+                embedding: records[i].embedding,
+                clipURLs: records[i].clips.map { meeting.clip($0.file) },
+                source: .auto
+            )
+            records[i].contributedTo = person.id
+        }
+        progress(.at(.speakerID, 1))
+        
+        // 9. 输出
+        let transcript = Transcript(
+            title: meta.title,
+            createdAt: ISO8601.string(from: meta.createdAt),
+            durationSec: Self.round2(duration),
+            speakers: speakers,
+            segments: out,
+            pauses: meta.pauses.isEmpty ? nil : meta.pauses.map { PauseMark(at: Self.round2($0.audioOffset)) },
+            models: engines.models
+        )
+        
+        try JSONIO.write(SpeakersFile(matchThreshold: rec.matchThreshold, speakers: records), to: meeting.speakersJSON)
+        try TranscriptWriter.writeAll(transcript, to: meeting)
+        
+        guard TranscriptWriter.verify(transcript, at: meeting),
+              (try? store.loadSpeakers(meeting)) != nil,
+              records.allSatisfy({ $0.clips.allSatisfy { FileManager.default.fileExists(atPath: meeting.clip($0.file).path) } }) else {
+            throw ProcessingError.verificationFailed
+        }
+        
+        progress(.at(.output, 1))
+        return transcript
+    }
 }

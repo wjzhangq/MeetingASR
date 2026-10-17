@@ -263,3 +263,46 @@ public enum SherpaEngineFactory {
 
     public static var version: String { getSherpaOnnxVersion() }
 }
+
+/// 流式 Silero VAD（复用实例，支持增量送帧）。
+public final class SherpaStreamingVAD: StreamingVAD {
+    private let vad: SherpaOnnxVoiceActivityDetectorWrapper
+    
+    public init(paths: ModelPaths, config: SegmentVADConfig) throws {
+        guard FileManager.default.fileExists(atPath: paths.vad.path) else {
+            throw EngineError.modelMissing(paths.vad.path)
+        }
+        let silero = sherpaOnnxSileroVadModelConfig(
+            model: paths.vad.path,
+            threshold: config.threshold,
+            minSilenceDuration: config.minSilenceDuration,
+            minSpeechDuration: config.minSpeechDuration,
+            windowSize: 512,
+            maxSpeechDuration: config.maxSpeechDuration
+        )
+        let bufferSec = max(60, config.maxSpeechDuration * 4)
+        var vadConfig = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
+        vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &vadConfig, buffer_size_in_seconds: bufferSec)
+    }
+    
+    public func accept(_ samples: [Float]) {
+        vad.acceptWaveform(samples: samples)
+    }
+    
+    public func next() -> ClosedRange<Double>? {
+        guard !vad.isEmpty() else { return nil }
+        let seg = vad.front()
+        let start = Double(seg.start) / 16_000
+        let end = start + Double(seg.n) / 16_000
+        vad.pop()
+        return start...end
+    }
+    
+    public func flush() {
+        vad.flush()
+    }
+    
+    public func reset() {
+        vad.reset()
+    }
+}
