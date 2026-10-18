@@ -85,6 +85,8 @@ public protocol VoiceActivityDetector: AnyObject {
     func detect(_ samples: [Float]) -> [ClosedRange<Double>]
     /// 带进度（0...1）的检测，长音频用
     func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>]
+    /// 使用本次任务的 VAD 参数，而不是引擎创建时的快照。
+    func detect(_ samples: [Float], config: SegmentVADConfig, progress: (Double) -> Void) -> [ClosedRange<Double>]
 }
 
 extension VoiceActivityDetector {
@@ -92,6 +94,14 @@ extension VoiceActivityDetector {
         let r = detect(samples)
         progress(1)
         return r
+    }
+
+    public func detect(_ samples: [Float], config: SegmentVADConfig, progress: (Double) -> Void) -> [ClosedRange<Double>] {
+        detect(samples, progress: progress)
+    }
+
+    public func detect(_ samples: [Float], config: SegmentVADConfig) -> [ClosedRange<Double>] {
+        detect(samples, config: config) { _ in }
     }
 }
 

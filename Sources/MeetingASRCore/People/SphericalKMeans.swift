@@ -44,15 +44,14 @@ public struct SphericalKMeans: Sendable {
         let kClamped = min(k, items.count)
         guard kClamped > 1 else { return Array(repeating: 0, count: items.count) }
         
-        // K-Means++ 初始化
+        // K-Means++ 初始化。距离耗尽时中心数会少于 k，后面按实际中心数迭代。
         var rng = SeededRandom(seed: config.kmeansSeed)
-        let initialCenters = kMeansPlusPlusInit(items, k: kClamped, rng: &rng)
-        
-        var centers = initialCenters
+        var centers = kMeansPlusPlusInit(items, k: kClamped, rng: &rng)
+        guard !centers.isEmpty else { return [] }
+        let kActual = centers.count
         var assignments = [Int](repeating: 0, count: items.count)
         
         for _ in 0..<config.kmeansMaxIterations {
-            // 分配每个点到最近的中心
             var changed = false
             for i in items.indices {
                 let newCluster = nearestCenter(items[i].vector, centers: centers)
@@ -64,8 +63,8 @@ public struct SphericalKMeans: Sendable {
             
             if !changed { break }
             
-            // 重新计算中心（按权重加权）
-            centers = updateCenters(items, assignments: assignments, k: kClamped)
+            // 空簇保留上一轮中心，避免滤掉零向量后下标前移。
+            centers = updateCenters(items, assignments: assignments, k: kActual, previous: centers)
         }
         
         return assignments
@@ -117,14 +116,15 @@ public struct SphericalKMeans: Sendable {
         return bestIdx
     }
     
-    private func updateCenters(_ items: [Item], assignments: [Int], k: Int) -> [[Float]] {
-        guard let dim = items.first?.vector.count else { return [] }
+    private func updateCenters(_ items: [Item], assignments: [Int], k: Int, previous: [[Float]]) -> [[Float]] {
+        guard let dim = items.first?.vector.count, k > 0 else { return previous }
         
         var sums = [[Float]](repeating: [Float](repeating: 0, count: dim), count: k)
         var weights = [Double](repeating: 0, count: k)
         
         for (i, item) in items.enumerated() {
             let c = assignments[i]
+            guard c >= 0, c < k, item.vector.count == dim else { continue }
             let w = Float(item.weight)
             weights[c] += item.weight
             for d in 0..<dim {
@@ -132,9 +132,10 @@ public struct SphericalKMeans: Sendable {
             }
         }
         
-        return sums.enumerated().map { c, sum in
-            weights[c] > 0 ? VectorMath.normalized(sum) : sum
-        }.filter { !$0.allSatisfy { $0 == 0 } }
+        return (0..<k).map { c in
+            if weights[c] > 0 { return VectorMath.normalized(sums[c]) }
+            return c < previous.count ? previous[c] : sums[c]
+        }
     }
 }
 
@@ -192,15 +193,17 @@ public struct SegmentClusterer: Sendable {
     }
     
     private func mergeClusters(_ segments: [Segment]) -> [Segment] {
-        var clusterStats = computeClusterStats(segments)
+        var result = segments
+        var clusterStats = computeClusterStats(result)
         
         while clusterStats.count > 1 {
-            // 找最相似的一对
             var bestPair: (String, String)?
             var bestSim = -2.0
             
-            for a in clusterStats.keys {
-                for b in clusterStats.keys where b > a {
+            let ids = clusterStats.keys.sorted()
+            for i in ids.indices {
+                for j in (i + 1)..<ids.count {
+                    let a = ids[i], b = ids[j]
                     let sim = VectorMath.cosine(clusterStats[a]!.centroid, clusterStats[b]!.centroid)
                     if sim > bestSim {
                         bestSim = sim
@@ -211,18 +214,14 @@ public struct SegmentClusterer: Sendable {
             
             guard let (a, b) = bestPair, bestSim >= config.mergeSimilarity else { break }
             
-            // 合并 b 到 a
-            var result = segments
             for i in result.indices where result[i].cluster == b {
                 result[i].cluster = a
             }
             clusterStats = computeClusterStats(result)
         }
         
-        var result = segments
-        // 更新映射后重新编号
         let finalClusters = Set(result.compactMap(\.cluster)).sorted()
-        let renameMap = Dictionary(uniqueKeysWithValues: finalClusters.enumerated().map { ("C\($0)", $1) })
+        let renameMap = Dictionary(uniqueKeysWithValues: finalClusters.enumerated().map { ($1, "C\($0)") })
         for i in result.indices {
             if let old = result[i].cluster, let new = renameMap[old] {
                 result[i].cluster = new

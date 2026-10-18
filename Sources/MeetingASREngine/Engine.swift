@@ -187,10 +187,19 @@ public final class SherpaVAD: VoiceActivityDetector {
     }
 
     public func detect(_ samples: [Float]) -> [ClosedRange<Double>] {
-        detect(samples) { _ in }
+        detect(samples, config: vadConfig)
     }
 
     public func detect(_ samples: [Float], progress: (Double) -> Void) -> [ClosedRange<Double>] {
+        detect(samples, config: vadConfig, progress: progress)
+    }
+
+    public func detect(_ samples: [Float], config: SegmentVADConfig, progress: (Double) -> Void) -> [ClosedRange<Double>] {
+        let raw = detectRaw(samples, config: config, progress: progress)
+        return SpeechRangeSplitter.split(raw, samples: samples, sampleRate: 16_000, maxSec: Double(config.maxSpeechDuration))
+    }
+
+    private func detectRaw(_ samples: [Float], config vadConfig: SegmentVADConfig, progress: (Double) -> Void) -> [ClosedRange<Double>] {
         // 每次检测新建实例，避免状态残留；模型很小，开销可忽略
         let silero = sherpaOnnxSileroVadModelConfig(
             model: paths.vad.path,
@@ -200,8 +209,9 @@ public final class SherpaVAD: VoiceActivityDetector {
             windowSize: 512,
             maxSpeechDuration: vadConfig.maxSpeechDuration)
         var config = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
-        // 缓冲区要容得下最长段，否则内部 circular buffer 反复扩容
-        let bufferSec = max(60, vadConfig.maxSpeechDuration * 4)
+        // maxSpeechDuration 在当前 sherpa-onnx 上压不住长语音（实测出现 216s）。
+        // 环形缓冲要容得下整段输入，否则 start/n 绕回；段长上限由 SpeechRangeSplitter 保证。
+        let bufferSec = max(Float(samples.count) / 16_000 + 1, vadConfig.maxSpeechDuration * 4)
         let vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &config, buffer_size_in_seconds: bufferSec)
         var out: [ClosedRange<Double>] = []
         func collect() {
@@ -240,22 +250,31 @@ public enum SherpaEngineFactory {
     /// - Parameter asrModel: 所选识别模型；未安装时使用 Paraformer
     /// - Parameter provider: 推理后端，"cpu" 或 "coreml"（神经引擎）
     /// - Parameter diarizationStrategy: 说话人分离策略
+    /// - Parameter loadDiarizer: 段流水线不调用分离模型。实时分离会自己建 `SherpaDiarizer`。
     public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer,
                            provider: String = "cpu", diarizationStrategy: DiarizationStrategy = .pyannote,
-                           vadConfig: SegmentVADConfig = SegmentVADConfig()) throws -> EngineSet {
+                           vadConfig: SegmentVADConfig = SegmentVADConfig(),
+                           loadDiarizer: Bool = true) throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
         let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
-        let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: numThreads, provider: provider)
-        let embedder = try SherpaEmbedder(paths: paths, numThreads: numThreads, provider: provider)
+        // ASR 与声纹并行，线程对半分，避免两套会话各占满全部核心。
+        let asrThreads = max(1, (numThreads + 1) / 2)
+        let embedThreads = max(1, numThreads / 2)
+        let recognizer = try SherpaRecognizer(paths: paths, kind: kind, numThreads: asrThreads, provider: provider)
+        let embedder = try SherpaEmbedder(paths: paths, numThreads: embedThreads, provider: provider)
         let vad = try SherpaVAD(paths: paths, config: vadConfig)
 
         let diarizer: SpeakerDiarizer
-        switch diarizationStrategy {
-        case .pyannote:
-            diarizer = try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider)
-        case .fast:
-            diarizer = SherpaFastDiarizer(vad: vad, embedder: embedder)
+        if !loadDiarizer {
+            diarizer = IdleDiarizer()
+        } else {
+            switch diarizationStrategy {
+            case .pyannote:
+                diarizer = try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider)
+            case .fast:
+                diarizer = SherpaFastDiarizer(vad: vad, embedder: embedder)
+            }
         }
 
         var models = ModelVersions.bundled
@@ -274,6 +293,14 @@ public enum SherpaEngineFactory {
     public static var version: String { getSherpaOnnxVersion() }
 }
 
+/// 段流水线不使用 pyannote。保留协议实现，避免引擎集合出现空槽。
+private final class IdleDiarizer: SpeakerDiarizer {
+    func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan] {
+        _ = progress(1)
+        return []
+    }
+}
+
 /// 流式 Silero VAD（复用实例，支持增量送帧）。
 public final class SherpaStreamingVAD: StreamingVAD {
     private let vad: SherpaOnnxVoiceActivityDetectorWrapper
@@ -290,7 +317,7 @@ public final class SherpaStreamingVAD: StreamingVAD {
             windowSize: 512,
             maxSpeechDuration: config.maxSpeechDuration
         )
-        let bufferSec = max(60, config.maxSpeechDuration * 4)
+        let bufferSec = max(Float(900), config.maxSpeechDuration * 4)
         var vadConfig = sherpaOnnxVadModelConfig(sileroVad: silero, sampleRate: 16_000, numThreads: 1)
         vad = SherpaOnnxVoiceActivityDetectorWrapper(config: &vadConfig, buffer_size_in_seconds: bufferSec)
     }

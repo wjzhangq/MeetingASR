@@ -36,7 +36,25 @@ public enum TokenText {
         return out
     }
 
+    /// 拼接多段文本：中文直接相连，英文词边界加空格。
+    public static func joinPieces(_ pieces: [String]) -> String {
+        var out = ""
+        for piece in pieces {
+            let t = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { continue }
+            if let last = out.last, let first = t.first, needsSpace(last, first) {
+                out.append(" ")
+            }
+            out += t
+        }
+        return out
+    }
+
     static func isLatin(_ c: Character) -> Bool { c.isASCII && (c.isLetter || c.isNumber) }
+
+    private static func needsSpace(_ last: Character, _ first: Character) -> Bool {
+        (isLatin(last) || isLatin(first)) && !last.isPunctuation && !first.isPunctuation
+    }
 }
 
 /// 文本相似度（去掉标点与空白后按字比较）。
@@ -84,9 +102,11 @@ public enum TurnAssembler {
             let start = current.map(\.start).min() ?? first.start
             let end = current.map(\.end).max() ?? first.end
             
-            // 合并文本和 tokens
+            // 有字级时间戳时按 token 拼接；没有时间戳的模型（如 FireRedASR-AED）回退到段文本。
+            let text = TokenText.joinPieces(current.map { seg in
+                seg.tokens.isEmpty ? seg.text : TokenText.join(seg.tokens.sorted { $0.start < $1.start })
+            })
             let allTokens = current.flatMap(\.tokens).sorted { $0.start < $1.start }
-            let text = TokenText.join(allTokens)
             
             pieces.append(RecognizedPiece(
                 speaker: speaker,

@@ -144,6 +144,9 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     /// 是否输出字级时间戳
     public var providesTimestamps: Bool { self != .fireRedAsrAed }
 
+    /// 单次送入 ASR 的音频上限（秒）。FireRedASR-CTC 超过约 60 秒会在 ONNX 里崩溃。
+    public var maxASRSegmentSec: Double { 60 }
+
     /// 命令行与脚本中的名称
     public var cliName: String {
         switch self {

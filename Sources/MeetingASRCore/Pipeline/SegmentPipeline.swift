@@ -50,10 +50,13 @@ public final class SegmentQueue {
 public final class SegmentPipeline {
     private let config: SegmentClusteringConfig
     private let sampleRate: Int
+    /// 单次送入 ASR 的采样点上限。按采样点切，不再把补边叠到语音时长上。
+    private let maxASRSec: Double
     
-    public init(config: SegmentClusteringConfig, sampleRate: Int = 16_000) {
+    public init(config: SegmentClusteringConfig, sampleRate: Int = 16_000, maxASRSec: Double = 60) {
         self.config = config
         self.sampleRate = sampleRate
+        self.maxASRSec = max(1, maxASRSec)
     }
     
     /// 处理一批段（ASR 和声纹并行）。
@@ -62,129 +65,109 @@ public final class SegmentPipeline {
     ///   - samples: 本轨完整音频
     ///   - recognizer: ASR 引擎（不跨线程共享，每个 worker 持有自己的实例）
     ///   - embedder: 声纹引擎
-    /// - Returns: 处理后的段（填充了 text/tokens/embedding/subwindows/isMixed）
+    /// - Returns: 处理后的段（填充了 text/tokens/embedding/subwindows/isMixed）。时间边界保持输入段不变。
     public func process(
         _ segments: [Segment],
         samples: [Float],
         recognizer: SpeechRecognizer,
-        embedder: SpeakerEmbedder
-    ) -> [Segment] {
+        embedder: SpeakerEmbedder,
+        cancel: CancellationFlag = CancellationFlag()
+    ) throws -> [Segment] {
         guard !segments.isEmpty else { return [] }
 
-        let maxAsrDuration = 60.0  // 单段 ASR 最大输入长度（秒）
-        let maxAsrSamples = Int(maxAsrDuration * Double(sampleRate))
-
+        let maxAsrSamples = max(1, Int(maxASRSec * Double(sampleRate)))
         let queueASR = SegmentQueue(capacity: 64)
         let queueEmb = SegmentQueue(capacity: 64)
-        
-        // 结果字典：id → 段
-        var results: [Int: Segment] = [:]
+
+        var asrParts: [Int: [(order: Int, text: String, tokens: [TranscriptToken])]] = [:]
+        var embeddings: [Int: Segment] = [:]
         let lock = NSLock()
-        
         let group = DispatchGroup()
-        
-        // ASR worker
+
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [sampleRate, maxAsrSamples] in
             defer { group.leave() }
             while let seg = queueASR.dequeue() {
-                var s = seg
-                let audio = Self.slice(samples, s.start, s.end, sampleRate: sampleRate)
+                if cancel.isCancelled {
+                    queueASR.close()
+                    queueEmb.close()
+                    break
+                }
+                var audio = Self.slice(samples, seg.start, seg.end, sampleRate: sampleRate)
                 if audio.count > maxAsrSamples {
-                    let lenSec = Double(audio.count) / Double(sampleRate)
-                    print("⚠️  段 #\(s.id): ASR 输入 \(String(format: "%.1f", lenSec))s / \(audio.count) 采样点，超过安全长度")
+                    audio = Array(audio.prefix(maxAsrSamples))
                 }
                 let result = recognizer.recognize(audio)
-                s.text = result.text
-                s.tokens = result.tokens.map { TranscriptToken(t: $0.t, start: $0.start + s.start) }
-
+                let tokens = result.tokens.map { TranscriptToken(t: $0.t, start: $0.start + seg.start) }
+                let order = Int(seg.metadata?["subIndex"] ?? "0") ?? 0
                 lock.lock()
-                // 检查是否为切分的子段
-                let isSplit = s.metadata?["isSplit"] == "true"
-                if isSplit, var existing = results[s.id] {
-                    // 合并子段：拼接文本，扩展时间范围
-                    existing.text = existing.text + s.text
-                    existing.tokens = existing.tokens + s.tokens
-                    existing.start = min(existing.start, s.start)
-                    existing.end = max(existing.end, s.end)
-                    existing.speechStart = min(existing.speechStart, s.speechStart)
-                    existing.speechEnd = max(existing.speechEnd, s.speechEnd)
-                    results[s.id] = existing
-                } else {
-                    // 清理内部元数据
-                    s.metadata?.removeValue(forKey: "subIndex")
-                    s.metadata?.removeValue(forKey: "isSplit")
-                    if s.metadata?.isEmpty == true { s.metadata = nil }
-                    results[s.id] = s
-                }
+                asrParts[seg.id, default: []].append((order, result.text, tokens))
                 lock.unlock()
             }
         }
-        
-        // 声纹 worker
+
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [sampleRate] in
             defer { group.leave() }
             while let seg = queueEmb.dequeue() {
+                if cancel.isCancelled {
+                    queueASR.close()
+                    queueEmb.close()
+                    break
+                }
                 var s = seg
                 self.extractEmbedding(for: &s, samples: samples, embedder: embedder, sampleRate: sampleRate)
-                
                 lock.lock()
-                if var existing = results[s.id] {
-                    // ASR 已完成，合并声纹字段
-                    existing.embedding = s.embedding
-                    existing.subwindows = s.subwindows
-                    existing.isShort = s.isShort
-                    existing.isMixed = s.isMixed
-                    results[s.id] = existing
-                } else {
-                    // ASR 还没完成，先记录声纹部分
-                    results[s.id] = s
-                }
+                embeddings[s.id] = s
                 lock.unlock()
             }
         }
-        
-        // 生产者：每个段同时送入两个队列
-        // ASR 队列：长段需要切分（避免 ONNX Runtime 维度错误）
-        for seg in segments {
-            let duration = seg.speechEnd - seg.speechStart
 
-            if duration > maxAsrDuration {
-                // 切分成多个 ≤60s 的子段
-                let numSubSegments = Int(ceil(duration / maxAsrDuration))
-                print("⚠️  段 #\(seg.id): 语音 \(String(format: "%.1f", duration))s 超过 \(Int(maxAsrDuration))s 限制，切分为 \(numSubSegments) 个子段")
-                var subStart = seg.speechStart
-                var subIndex = 0
-                while subStart < seg.speechEnd {
-                    let subEnd = min(subStart + maxAsrDuration, seg.speechEnd)
-                    var subSeg = seg
-                    subSeg.speechStart = subStart
-                    subSeg.speechEnd = subEnd
-                    // 重新计算 start/end（保持原有的 padding 比例）
-                    let originalPadBefore = seg.speechStart - seg.start
-                    let originalPadAfter = seg.end - seg.speechEnd
-                    subSeg.start = max(seg.start, subStart - originalPadBefore)
-                    subSeg.end = min(seg.end, subEnd + originalPadAfter)
-                    // 保持 id 相同以便合并，但用内部标记区分子段
-                    subSeg.metadata = ["subIndex": "\(subIndex)", "isSplit": "true"]
-                    queueASR.enqueue(subSeg)
-                    subStart = subEnd
-                    subIndex += 1
+        for seg in segments {
+            if cancel.isCancelled { break }
+            let a = max(0, Int(seg.start * Double(sampleRate)))
+            let b = min(samples.count, Int(seg.end * Double(sampleRate)))
+            if b - a > maxAsrSamples {
+                let pieces = Int(ceil(Double(b - a) / Double(maxAsrSamples)))
+                print("段 #\(seg.id): 音频 \(String(format: "%.1f", Double(b - a) / Double(sampleRate)))s 超过 ASR 上限 \(Int(maxASRSec))s，切成 \(pieces) 段且不重叠")
+                var i = a
+                var order = 0
+                while i < b {
+                    let j = min(b, i + maxAsrSamples)
+                    var sub = seg
+                    sub.start = Double(i) / Double(sampleRate)
+                    sub.end = Double(j) / Double(sampleRate)
+                    sub.metadata = ["subIndex": "\(order)"]
+                    queueASR.enqueue(sub)
+                    i = j
+                    order += 1
                 }
             } else {
                 queueASR.enqueue(seg)
             }
-
-            // 声纹队列：总是使用完整段
             queueEmb.enqueue(seg)
         }
         queueASR.close()
         queueEmb.close()
-        
         group.wait()
-        
-        return segments.map { results[$0.id] ?? $0 }
+        try cancel.check()
+
+        return segments.map { original in
+            var s = original
+            if let emb = embeddings[original.id] {
+                s.embedding = emb.embedding
+                s.subwindows = emb.subwindows
+                s.isShort = emb.isShort
+                s.isMixed = emb.isMixed
+            }
+            if let parts = asrParts[original.id] {
+                let ordered = parts.sorted { $0.order < $1.order }
+                s.text = TokenText.joinPieces(ordered.map(\.1))
+                s.tokens = ordered.flatMap(\.2).sorted { $0.start < $1.start }
+            }
+            s.metadata = nil
+            return s
+        }
     }
     
     private func extractEmbedding(

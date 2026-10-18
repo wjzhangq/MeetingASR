@@ -13,6 +13,17 @@ public struct SegmentLogKey: Codable, Equatable, Sendable {
         self.asrModel = asrModel
         self.embeddingModel = embeddingModel
     }
+
+    /// 稳定的单行指纹。JSON 键序不稳定，不能拿两次编码的字节比较。
+    var fingerprint: String {
+        let v = vadConfig
+        return String(
+            format: "%@|%@|%@|%.4f|%.4f|%.4f|%.4f|%.4f|%.4f",
+            track.rawValue, asrModel, embeddingModel,
+            Double(v.threshold), Double(v.minSilenceDuration), Double(v.minSpeechDuration),
+            Double(v.maxSpeechDuration), Double(v.padBefore), Double(v.padAfter)
+        )
+    }
 }
 
 /// 段日志文件：.raw/segments_<track>.jsonl
@@ -22,6 +33,12 @@ public enum SegmentLog {
         meeting.rawDir.appendingPathComponent("segments_\(track.rawValue).jsonl")
     }
     
+    /// 新建日志并写入参数指纹。之后再用 `append` 追加段。指纹不一致的日志不会被复用。
+    public static func create(_ url: URL, key: SegmentLogKey) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ("key " + key.fingerprint).write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// 追加一个段到日志。
     public static func append(_ segment: Segment, to url: URL) throws {
         let data = try JSONEncoder().encode(segment)
@@ -48,10 +65,9 @@ public enum SegmentLog {
         let content = try String(contentsOf: url, encoding: .utf8)
         let lines = content.split(separator: "\n").map(String.init)
         
-        return try lines.compactMap { line in
-            guard !line.isEmpty else { return nil }
-            let data = line.data(using: .utf8) ?? Data()
-            return try JSONDecoder().decode(Segment.self, from: data)
+        return lines.compactMap { line in
+            guard !line.isEmpty, let data = line.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(Segment.self, from: data)
         }
     }
     
@@ -62,13 +78,16 @@ public enum SegmentLog {
         key: SegmentLogKey
     ) -> [Segment] {
         let url = self.url(meeting, track: track)
-        guard let segments = try? read(from: url), !segments.isEmpty else { return [] }
-        
-        // 简化版：只要日志存在且非空就认为可用
-        // 实际应该在文件头写入 key 并校验，这里先省略
-        return segments
+        guard FileManager.default.fileExists(atPath: url.path),
+              let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).filter { !$0.isEmpty }
+        guard lines.first == "key " + key.fingerprint else { return [] }
+        return lines.dropFirst().compactMap { line in
+            guard let data = line.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(Segment.self, from: data)
+        }
     }
-    
+
     /// 删除日志文件。
     public static func remove(meeting: MeetingPaths, track: TrackKind) {
         let url = self.url(meeting, track: track)

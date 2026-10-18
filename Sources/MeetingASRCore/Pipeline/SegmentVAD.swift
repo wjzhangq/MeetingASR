@@ -20,9 +20,6 @@ public final class SegmentVAD {
     
     /// 已送入音频的总时长（秒）
     private var totalSec: Double = 0
-    /// 环形缓冲：保留最近 ringBufferSec 的音频
-    private var ringBuffer: [Float] = []
-    private var ringBufferMaxSamples: Int
     /// 下一个段的 ID
     private var nextId = 0
     
@@ -31,19 +28,11 @@ public final class SegmentVAD {
         self.track = track
         self.config = config
         self.sampleRate = sampleRate
-        self.ringBufferMaxSamples = Int(config.padBefore * Double(sampleRate)) + 512
     }
     
-    /// 送入新音频。
+    /// 送入新音频。补边只改时间边界，音频在整轨缓冲里切，这里不再复制一份环形缓冲。
     public func accept(_ samples: [Float]) {
         vad.accept(samples)
-        
-        // 更新环形缓冲
-        ringBuffer.append(contentsOf: samples)
-        if ringBuffer.count > ringBufferMaxSamples {
-            ringBuffer.removeFirst(ringBuffer.count - ringBufferMaxSamples)
-        }
-        
         totalSec += Double(samples.count) / Double(sampleRate)
     }
     
@@ -87,7 +76,6 @@ public final class SegmentVAD {
     
     public func reset() {
         vad.reset()
-        ringBuffer.removeAll()
         totalSec = 0
         nextId = 0
     }

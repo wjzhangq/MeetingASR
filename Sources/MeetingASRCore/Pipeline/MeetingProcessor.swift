@@ -25,6 +25,8 @@ public struct ProcessingOptions: Sendable {
     public var textEcho: TextEchoFilter
     /// 识别成功后删除原始音频（FR-P6）
     public var deleteRawOnSuccess: Bool
+    /// 为 false 时不改会议状态、不写逐字稿、不向人物库加样本。参数扫描用。
+    public var persistResults: Bool = true
 
     public init(recognition: RecognitionSettings = RecognitionSettings(), hotwords: HotwordList = HotwordList(words: []), segmenter: SegmenterConfig = SegmenterConfig(), echo: EchoDetector = EchoDetector(), textEcho: TextEchoFilter = TextEchoFilter(), deleteRawOnSuccess: Bool = true) {
         self.recognition = recognition
@@ -82,28 +84,36 @@ public final class MeetingProcessor {
     @discardableResult
     public func process(_ meeting: MeetingPaths, cancel: CancellationFlag = CancellationFlag(), progress: @escaping (ProcessingProgress) -> Void = { _ in }) throws -> Transcript {
         var meta = try store.loadMeta(meeting)
-        meta.status = .processing
-        meta.error = nil
-        meta.processingStartedAt = Date()
-        meta.models = engines.models
-        try store.saveMeta(meta, meeting)
+        if options.persistResults {
+            meta.status = .processing
+            meta.error = nil
+            meta.processingStartedAt = Date()
+            meta.models = engines.models
+            try store.saveMeta(meta, meeting)
+        }
         do {
             let t = try run(meeting, meta: meta, cancel: cancel, progress: progress)
-            try store.updateMeta(meeting) {
-                $0.status = .done
-                $0.processingFinishedAt = Date()
-                if t.durationSec > 0 { $0.durationSec = t.durationSec }
+            if options.persistResults {
+                try store.updateMeta(meeting) {
+                    $0.status = .done
+                    $0.processingFinishedAt = Date()
+                    if t.durationSec > 0 { $0.durationSec = t.durationSec }
+                }
+                progress(.at(.cleanup, 0))
+                try cleanup(meeting, meta: meta)
+                progress(.at(.cleanup, 1))
+            } else {
+                try? FileManager.default.removeItem(at: meeting.workDir)
             }
-            progress(.at(.cleanup, 0))
-            try cleanup(meeting, meta: meta)
-            progress(.at(.cleanup, 1))
             return t
         } catch {
             let isCancel = error is CancellationError || cancel.isCancelled
-            _ = try? store.updateMeta(meeting) {
-                $0.status = isCancel ? .cancelled : .failed
-                $0.error = isCancel ? nil : String(describing: error)
-                $0.processingFinishedAt = Date()
+            if options.persistResults {
+                _ = try? store.updateMeta(meeting) {
+                    $0.status = isCancel ? .cancelled : .failed
+                    $0.error = isCancel ? nil : String(describing: error)
+                    $0.processingFinishedAt = Date()
+                }
             }
             // 删除中间文件，保留原始音频以便重试
             try? FileManager.default.removeItem(at: meeting.workDir)
@@ -154,7 +164,10 @@ public final class MeetingProcessor {
 
     // MARK: - 说话人特征
 
-    private func extractSpeaker(_ sid: String, track: TrackKind, segments: [ASRSegment], tracks: [PreparedTrack], meeting: MeetingPaths, duration: Double) throws -> SpeakerRecord? {
+    private func extractSpeaker(
+        _ sid: String, track: TrackKind, segments: [ASRSegment], tracks: [PreparedTrack], meeting: MeetingPaths,
+        duration: Double, samples: [Float] = [], offset: Double = 0, embedding knownEmbedding: [Float] = []
+    ) throws -> SpeakerRecord? {
         guard let tr = tracks.first(where: { $0.kind == track }) else { return nil }
         let rec = options.recognition
         let selector = ClipSelector(count: rec.clipsPerSpeaker, minSec: rec.clipMinSec, maxSec: rec.clipMaxSec)
@@ -171,9 +184,16 @@ public final class MeetingProcessor {
             let step = Double(cands.count) / Double(maxCands)
             cands = (0..<maxCands).map { cands[Int(Double($0) * step)] }
         }
-        let audios = cands.map { read(tr, $0.start, $0.end) }
-        let embs = audios.map { engines.embedder.embed($0) }
-        let overall = VectorMath.meanNormalized(embs.compactMap { $0 })
+        let audios = cands.map { clipAudio($0, track: tr, samples: samples, offset: offset) }
+        let embs: [[Float]?]
+        let overall: [Float]
+        if knownEmbedding.isEmpty {
+            embs = audios.map { engines.embedder.embed($0) }
+            overall = VectorMath.meanNormalized(embs.compactMap { $0 })
+        } else {
+            embs = Array(repeating: knownEmbedding, count: audios.count)
+            overall = knownEmbedding
+        }
         let scores = zip(embs, audios).map { e, a -> Double in
             guard let e else { return 0 }
             return ClipSelector.score(similarity: overall.isEmpty ? 1 : VectorMath.cosine(e, overall), snrDB: SignalStats.estimateSNR(a))
@@ -186,11 +206,17 @@ public final class MeetingProcessor {
             let idx = cands.firstIndex(of: c)!
             try WavWriter.writeMono(audios[idx], sampleRate: Self.sr, to: meeting.clip(file))
             clips.append(FeatureClip(file: file, start: Self.round2(c.start), end: Self.round2(c.end), score: (score * 1000).rounded() / 1000))
-            if let e = embs[idx] { clipEmbs.append(e) }
+            if knownEmbedding.isEmpty, let e = embs[idx] { clipEmbs.append(e) }
         }
-        // 说话人声纹 = 所选片段声纹均值并归一化
-        let embedding = clipEmbs.isEmpty ? overall : VectorMath.meanNormalized(clipEmbs)
+        let embedding = knownEmbedding.isEmpty
+            ? (clipEmbs.isEmpty ? overall : VectorMath.meanNormalized(clipEmbs))
+            : knownEmbedding
         return SpeakerRecord(id: sid, track: track, embedding: embedding, clips: clips, durationSec: Self.round2(total))
+    }
+
+    private func clipAudio(_ c: ClipCandidate, track: PreparedTrack, samples: [Float], offset: Double) -> [Float] {
+        if samples.isEmpty { return read(track, c.start, c.end) }
+        return Self.slice(samples, c.start - offset, c.end - offset)
     }
 
     // MARK: - 清理（4.7）
@@ -260,21 +286,28 @@ public final class MeetingProcessor {
         // 2. VAD 分段 + 并行 ASR/声纹
         progress(.at(.diarization, 0))
         var allSegments: [Segment] = []
+        var samplesByTrack: [TrackKind: [Float]] = [:]
         let twoTrack = tracks.contains { $0.kind == .mic } && tracks.contains { $0.kind == .system }
         
         for (ti, track) in tracks.enumerated() {
             try cancel.check()
             let samples = track.reader.readAllMono()
+            samplesByTrack[track.kind] = samples
+            let trackDur = Double(samples.count) / Double(Self.sr)
             
-            // VAD 切段
-            let vadRanges = engines.vad.detect(samples)
+            // 用本任务的 VAD 参数，而不是引擎创建时的快照；超长段再按静音切开。
+            let detected = engines.vad.detect(samples, config: rec.segmentVAD)
+            let vadRanges = SpeechRangeSplitter.split(
+                detected, samples: samples, sampleRate: Self.sr, maxSec: Double(rec.segmentVAD.maxSpeechDuration))
             var segments = vadRanges.enumerated().map { idx, range -> Segment in
-                let padBefore = rec.segmentVAD.padBefore
-                let padAfter = rec.segmentVAD.padAfter
                 let speechStart = range.lowerBound
                 let speechEnd = range.upperBound
+                let prevEnd = idx > 0 ? vadRanges[idx - 1].upperBound : 0
+                let nextStart = idx + 1 < vadRanges.count ? vadRanges[idx + 1].lowerBound : trackDur
+                let padBefore = min(rec.segmentVAD.padBefore, max(0, speechStart - prevEnd))
+                let padAfter = min(rec.segmentVAD.padAfter, max(0, nextStart - speechEnd))
                 let start = max(0, speechStart - padBefore)
-                let end = min(Double(samples.count) / Double(Self.sr), speechEnd + padAfter)
+                let end = min(trackDur, speechEnd + padAfter)
                 
                 return Segment(
                     id: idx,
@@ -286,9 +319,10 @@ public final class MeetingProcessor {
                 )
             }
             
-            // 并行 ASR + 声纹
-            let pipeline = SegmentPipeline(config: rec.segmentClustering, sampleRate: Self.sr)
-            segments = pipeline.process(segments, samples: samples, recognizer: engines.recognizer, embedder: engines.embedder)
+            let pipeline = SegmentPipeline(
+                config: rec.segmentClustering, sampleRate: Self.sr, maxASRSec: rec.asrModel.maxASRSegmentSec)
+            segments = try pipeline.process(
+                segments, samples: samples, recognizer: engines.recognizer, embedder: engines.embedder, cancel: cancel)
             
             allSegments.append(contentsOf: segments)
             progress(.at(.diarization, (Double(ti) + 0.8) / Double(tracks.count)))
@@ -303,6 +337,7 @@ public final class MeetingProcessor {
         for track in Set(allSegments.map(\.track)) {
             var trackSegs = allSegments.filter { $0.track == track }
             
+            // 笔记本麦克风视为同一个人。系统轨才按声纹聚类。
             if twoTrack && track == .mic {
                 for i in trackSegs.indices {
                     trackSegs[i].cluster = "mic-speaker"
@@ -312,17 +347,24 @@ public final class MeetingProcessor {
                 trackSegs = assigner.assignShortSegments(trackSegs)
                 trackSegs = assigner.splitMixedSegments(trackSegs)
             }
+            // 簇编号按轨分开，避免两条音轨的 C0 被当成同一个人。
+            for i in trackSegs.indices {
+                if let c = trackSegs[i].cluster {
+                    trackSegs[i].cluster = "\(track.rawValue):\(c)"
+                }
+            }
             
             segmentsByTrack[track] = trackSegs
         }
         allSegments = segmentsByTrack.values.flatMap { $0 }
         
         // 4. 回声过滤
-        if twoTrack, let mic = tracks.first(where: { $0.kind == .mic }), let sys = tracks.first(where: { $0.kind == .system }) {
+        if twoTrack, let mic = tracks.first(where: { $0.kind == .mic }), let sys = tracks.first(where: { $0.kind == .system }),
+           let micAudio = samplesByTrack[.mic], let sysAudio = samplesByTrack[.system] {
             for i in allSegments.indices where allSegments[i].track == .mic {
                 let seg = allSegments[i]
-                let a = read(mic, seg.start, seg.end)
-                let b = read(sys, seg.start, seg.end)
+                let a = Self.slice(micAudio, seg.start - mic.offset, seg.end - mic.offset)
+                let b = Self.slice(sysAudio, seg.start - sys.offset, seg.end - sys.offset)
                 allSegments[i].isEcho = options.echo.isEcho(mic: a, system: b, micGain: mic.gain, systemGain: sys.gain)
             }
         }
@@ -373,50 +415,57 @@ public final class MeetingProcessor {
         progress(.at(.speakerID, 0))
         let spoken = Set(out.map(\.speaker))
         let speakerIDs = labels.values.filter { spoken.contains($0) }.sorted(by: Self.labelOrder)
-        try FileManager.default.createDirectory(at: meeting.speakersDir, withIntermediateDirectories: true)
-        
-        let asrSegments = allSegments.map { seg -> ASRSegment in
-            ASRSegment(
-                speaker: seg.speaker ?? "unknown",
-                track: seg.track,
-                start: seg.start,
-                end: seg.end,
-                cropStart: seg.start,
-                cropEnd: seg.end
-            )
-        }
-        
-        var records: [SpeakerRecord] = []
-        for (i, sid) in speakerIDs.enumerated() {
-            try cancel.check()
-            let segs = asrSegments.filter { $0.speaker == sid }
-            if let r = try extractSpeaker(sid, track: trackOfSpeaker[sid] ?? .file, segments: segs, tracks: tracks, meeting: meeting, duration: duration) {
-                records.append(r)
-            }
-            progress(.at(.speakerID, 0.8 * Double(i + 1) / Double(max(1, speakerIDs.count))))
-        }
-        
-        let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
-        let result = matcher.match(speakers: records.filter { !$0.embedding.isEmpty }.map { ($0.id, $0.embedding) }, people: people.people)
-        
         var speakers: [TranscriptSpeaker] = speakerIDs.map { TranscriptSpeaker(id: $0, track: trackOfSpeaker[$0] ?? .file) }
-        for i in records.indices {
-            records[i].bestMatch = result.best[records[i].id]
-            guard let m = result.assigned[records[i].id], let person = people.person(id: m.personId) else { continue }
-            if let si = speakers.firstIndex(where: { $0.id == records[i].id }) {
-                speakers[si].personId = person.id
-                speakers[si].name = person.name
-                speakers[si].source = .auto
+        var records: [SpeakerRecord] = []
+
+        if options.persistResults {
+            try FileManager.default.createDirectory(at: meeting.speakersDir, withIntermediateDirectories: true)
+            let asrSegments = allSegments.map { seg -> ASRSegment in
+                ASRSegment(
+                    speaker: seg.speaker ?? "unknown",
+                    track: seg.track,
+                    start: seg.start,
+                    end: seg.end,
+                    cropStart: seg.start,
+                    cropEnd: seg.end
+                )
             }
-            try people.addSample(
-                personId: person.id,
-                meeting: meeting.name,
-                speaker: records[i].id,
-                embedding: records[i].embedding,
-                clipURLs: records[i].clips.map { meeting.clip($0.file) },
-                source: .auto
-            )
-            records[i].contributedTo = person.id
+            for (i, sid) in speakerIDs.enumerated() {
+                try cancel.check()
+                let kind = trackOfSpeaker[sid] ?? .file
+                let segs = asrSegments.filter { $0.speaker == sid }
+                let owned = allSegments.filter { $0.speaker == sid && !$0.isEcho && !$0.embedding.isEmpty }
+                let known = Self.weightedMean(owned.map { ($0.embedding, max($0.speechDuration, 0.01)) })
+                let offset = tracks.first { $0.kind == kind }?.offset ?? 0
+                if let r = try extractSpeaker(
+                    sid, track: kind, segments: segs, tracks: tracks, meeting: meeting, duration: duration,
+                    samples: samplesByTrack[kind] ?? [], offset: offset, embedding: known
+                ) {
+                    records.append(r)
+                }
+                progress(.at(.speakerID, 0.8 * Double(i + 1) / Double(max(1, speakerIDs.count))))
+            }
+
+            let matcher = SpeakerMatcher(threshold: rec.matchThreshold)
+            let result = matcher.match(speakers: records.filter { !$0.embedding.isEmpty }.map { ($0.id, $0.embedding) }, people: people.people)
+            for i in records.indices {
+                records[i].bestMatch = result.best[records[i].id]
+                guard let m = result.assigned[records[i].id], let person = people.person(id: m.personId) else { continue }
+                if let si = speakers.firstIndex(where: { $0.id == records[i].id }) {
+                    speakers[si].personId = person.id
+                    speakers[si].name = person.name
+                    speakers[si].source = .auto
+                }
+                try people.addSample(
+                    personId: person.id,
+                    meeting: meeting.name,
+                    speaker: records[i].id,
+                    embedding: records[i].embedding,
+                    clipURLs: records[i].clips.map { meeting.clip($0.file) },
+                    source: .auto
+                )
+                records[i].contributedTo = person.id
+            }
         }
         progress(.at(.speakerID, 1))
         
@@ -430,17 +479,31 @@ public final class MeetingProcessor {
             pauses: meta.pauses.isEmpty ? nil : meta.pauses.map { PauseMark(at: Self.round2($0.audioOffset)) },
             models: engines.models
         )
-        
-        try JSONIO.write(SpeakersFile(matchThreshold: rec.matchThreshold, speakers: records), to: meeting.speakersJSON)
-        try TranscriptWriter.writeAll(transcript, to: meeting)
-        
-        guard TranscriptWriter.verify(transcript, at: meeting),
-              (try? store.loadSpeakers(meeting)) != nil,
-              records.allSatisfy({ $0.clips.allSatisfy { FileManager.default.fileExists(atPath: meeting.clip($0.file).path) } }) else {
-            throw ProcessingError.verificationFailed
+
+        if options.persistResults {
+            try JSONIO.write(SpeakersFile(matchThreshold: rec.matchThreshold, speakers: records), to: meeting.speakersJSON)
+            try TranscriptWriter.writeAll(transcript, to: meeting)
+            guard TranscriptWriter.verify(transcript, at: meeting),
+                  (try? store.loadSpeakers(meeting)) != nil,
+                  records.allSatisfy({ $0.clips.allSatisfy { FileManager.default.fileExists(atPath: meeting.clip($0.file).path) } }) else {
+                throw ProcessingError.verificationFailed
+            }
         }
         
         progress(.at(.output, 1))
         return transcript
+    }
+
+    /// 时长加权的声纹均值。段流水线已经算过声纹，人物匹配直接复用。
+    private static func weightedMean(_ pairs: [([Float], Double)]) -> [Float] {
+        let valid = pairs.filter { !$0.0.isEmpty && $0.1 > 0 }
+        guard let dim = valid.first?.0.count else { return [] }
+        var acc = [Float](repeating: 0, count: dim)
+        for (v, w) in valid where v.count == dim {
+            let n = VectorMath.normalized(v)
+            let fw = Float(w)
+            for i in 0..<dim { acc[i] += fw * n[i] }
+        }
+        return VectorMath.normalized(acc)
     }
 }

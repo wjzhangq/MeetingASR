@@ -107,7 +107,7 @@ func makeProcessor() -> MeetingProcessor {
     }
     let t0 = Date()
     let engines: EngineSet
-    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString, vadConfig: settings.recognition.segmentVAD) } catch { fail("\(error)") }
+    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString, vadConfig: settings.recognition.segmentVAD, loadDiarizer: false) } catch { fail("\(error)") }
     FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（%@，sherpa-onnx %@）\n", Date().timeIntervalSince(t0), engines.recognizer.modelName, SherpaEngineFactory.version).utf8))
     settings.recognition.numThreads = threads
     if let threshold { settings.recognition.clusterThreshold = threshold }
@@ -198,7 +198,8 @@ case "sweep":
         sweepEngines = try SherpaEngineFactory.make(
             paths: sweepPaths, numThreads: threads,
             asrModel: baseSettings.recognition.asrModel,
-            provider: baseSettings.recognition.inferenceProvider.providerString)
+            provider: baseSettings.recognition.inferenceProvider.providerString,
+            loadDiarizer: false)
     } catch { fail("\(error)") }
 
     let gridSize = vadMinSilenceGrid.count * mergeSimilarityGrid.count * minClusterSecGrid.count
@@ -222,8 +223,9 @@ case "sweep":
                     settings.recognition.segmentClustering.minClusterSec = minCluster
 
                     var opts = ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load())
-                    // 扫描要反复处理同一会议，必须保留原始音频
+                    // 扫描只收集指标：不改会议状态、不覆盖逐字稿、不写入人物库。
                     opts.deleteRawOnSuccess = false
+                    opts.persistResults = false
 
                     let proc = MeetingProcessor(engines: sweepEngines, store: store, people: people, options: opts)
                     let t0 = Date()

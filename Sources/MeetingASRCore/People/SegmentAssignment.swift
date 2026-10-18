@@ -131,7 +131,6 @@ public struct SegmentAssigner: Sendable {
     private func splitByLabels(_ segment: Segment, labels: [String]) -> [Segment] {
         var segments: [Segment] = []
         var currentLabel: String?
-        var currentTokens: [TranscriptToken] = []
         var rangeStart = segment.start
         
         for (i, label) in labels.enumerated() {
@@ -139,48 +138,37 @@ public struct SegmentAssigner: Sendable {
             let splitTime = (subwindow.start + subwindow.end) / 2
             
             if label != currentLabel, let prevLabel = currentLabel {
-                // 标签变化，切分
-                let tokensInRange = segment.tokens.filter { $0.start < splitTime }
-                let text = TokenText.join(tokensInRange)
-                
-                var newSeg = Segment(
-                    id: segment.id,
-                    track: segment.track,
-                    start: rangeStart,
-                    end: splitTime,
-                    speechStart: rangeStart,
-                    speechEnd: splitTime
-                )
-                newSeg.text = text
-                newSeg.tokens = tokensInRange
-                newSeg.cluster = prevLabel
-                segments.append(newSeg)
-                
-                currentTokens = segment.tokens.filter { $0.start >= splitTime }
+                segments.append(piece(segment, label: prevLabel, from: rangeStart, to: splitTime, includeEnd: false))
                 rangeStart = splitTime
             }
             
             currentLabel = label
         }
         
-        // 最后一段
         if let label = currentLabel {
-            let text = TokenText.join(currentTokens)
-            var newSeg = Segment(
-                id: segment.id,
-                track: segment.track,
-                start: rangeStart,
-                end: segment.end,
-                speechStart: rangeStart,
-                speechEnd: segment.end
-            )
-            newSeg.text = text
-            newSeg.tokens = currentTokens
-            newSeg.cluster = label
-            segments.append(newSeg)
+            segments.append(piece(segment, label: label, from: rangeStart, to: segment.end, includeEnd: true))
         }
         
         return segments.isEmpty ? [segment] : segments
+    }
+
+    /// 只取本段时间范围内的 token。切点上的字归下一段，避免三次换人时前面的字被重复带上。
+    private func piece(_ segment: Segment, label: String, from: Double, to: Double, includeEnd: Bool) -> Segment {
+        let tokens = segment.tokens.filter { token in
+            token.start >= from - 1e-6 && (includeEnd ? token.start <= to + 1e-6 : token.start < to)
+        }
+        var newSeg = Segment(
+            id: segment.id,
+            track: segment.track,
+            start: from,
+            end: to,
+            speechStart: from,
+            speechEnd: to
+        )
+        newSeg.text = tokens.isEmpty ? "" : TokenText.join(tokens)
+        newSeg.tokens = tokens
+        newSeg.cluster = label
+        return newSeg
     }
     
     private func nearestSpeaker(at idx: Int, in segments: [Segment], within sec: Double) -> String? {
