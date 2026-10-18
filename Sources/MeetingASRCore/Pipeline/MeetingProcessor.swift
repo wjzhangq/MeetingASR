@@ -267,6 +267,61 @@ public final class MeetingProcessor {
 
     static func round2(_ x: Double) -> Double { (x * 100).rounded() / 100 }
     
+    /// 对一段音频做 VAD 和识别。`samples[0]` 对应文件时间 `sampleOrigin`，返回段的时间落到会议时间轴（再加上音轨偏移）。
+    private func transcribe(
+        _ samples: [Float],
+        sampleOrigin: Double,
+        track: TrackKind,
+        offset: Double,
+        extractEmbeddings: Bool,
+        cancel: CancellationFlag
+    ) throws -> [Segment] {
+        let rec = options.recognition
+        let localDur = Double(samples.count) / Double(Self.sr)
+        let detected = engines.vad.detect(samples, config: rec.segmentVAD)
+        let vadRanges = SpeechRangeSplitter.split(
+            detected, samples: samples, sampleRate: Self.sr, maxSec: Double(rec.segmentVAD.maxSpeechDuration))
+        var segments = vadRanges.enumerated().map { idx, range -> Segment in
+            let speechStart = range.lowerBound
+            let speechEnd = range.upperBound
+            let prevEnd = idx > 0 ? vadRanges[idx - 1].upperBound : 0
+            let nextStart = idx + 1 < vadRanges.count ? vadRanges[idx + 1].lowerBound : localDur
+            let padBefore = min(rec.segmentVAD.padBefore, max(0, speechStart - prevEnd))
+            let padAfter = min(rec.segmentVAD.padAfter, max(0, nextStart - speechEnd))
+            return Segment(
+                id: idx,
+                track: track,
+                start: max(0, speechStart - padBefore),
+                end: min(localDur, speechEnd + padAfter),
+                speechStart: speechStart,
+                speechEnd: speechEnd
+            )
+        }
+        let pipeline = SegmentPipeline(
+            config: rec.segmentClustering, sampleRate: Self.sr, maxASRSec: rec.asrModel.maxASRSegmentSec)
+        segments = try pipeline.process(
+            segments, samples: samples, recognizer: engines.recognizer, embedder: engines.embedder,
+            extractEmbeddings: extractEmbeddings, cancel: cancel)
+        return segments.map { shifted($0, by: sampleOrigin + offset) }
+    }
+
+    private func shifted(_ segment: Segment, by delta: Double) -> Segment {
+        guard delta != 0 else { return segment }
+        var s = segment
+        s.start += delta
+        s.end += delta
+        s.speechStart += delta
+        s.speechEnd += delta
+        s.tokens = s.tokens.map { TranscriptToken(t: $0.t, start: $0.start + delta) }
+        s.subwindows = s.subwindows.map { sw in
+            var copy = sw
+            copy.start += delta
+            copy.end += delta
+            return copy
+        }
+        return s
+    }
+
     // MARK: - Segment Stream Mode
     
     private func runSegmentStream(
@@ -294,36 +349,29 @@ public final class MeetingProcessor {
             let samples = track.reader.readAllMono()
             samplesByTrack[track.kind] = samples
             let trackDur = Double(samples.count) / Double(Self.sr)
-            
-            // 用本任务的 VAD 参数，而不是引擎创建时的快照；超长段再按静音切开。
-            let detected = engines.vad.detect(samples, config: rec.segmentVAD)
-            let vadRanges = SpeechRangeSplitter.split(
-                detected, samples: samples, sampleRate: Self.sr, maxSec: Double(rec.segmentVAD.maxSpeechDuration))
-            var segments = vadRanges.enumerated().map { idx, range -> Segment in
-                let speechStart = range.lowerBound
-                let speechEnd = range.upperBound
-                let prevEnd = idx > 0 ? vadRanges[idx - 1].upperBound : 0
-                let nextStart = idx + 1 < vadRanges.count ? vadRanges[idx + 1].lowerBound : trackDur
-                let padBefore = min(rec.segmentVAD.padBefore, max(0, speechStart - prevEnd))
-                let padAfter = min(rec.segmentVAD.padAfter, max(0, nextStart - speechEnd))
-                let start = max(0, speechStart - padBefore)
-                let end = min(trackDur, speechEnd + padAfter)
-                
-                return Segment(
-                    id: idx,
-                    track: track.kind,
-                    start: start + track.offset,
-                    end: end + track.offset,
-                    speechStart: speechStart + track.offset,
-                    speechEnd: speechEnd + track.offset
-                )
+            let embed = !(twoTrack && track.kind == .mic)
+            let key = SegmentLogKey(
+                track: track.kind, vadConfig: rec.segmentVAD,
+                asrModel: engines.recognizer.modelName, embeddingModel: engines.embedder.modelName)
+            let cover = SegmentLog.coveredUntil(meeting: meeting, track: track.kind, key: key)
+            var segments: [Segment] = []
+            if cover > 0.05 {
+                // 录音期间已经按文件时间写好的段，这里只平移到会议时间轴。
+                segments = SegmentLog.usableSegments(meeting: meeting, track: track.kind, key: key).map {
+                    shifted($0, by: track.offset)
+                }
             }
-            
-            let pipeline = SegmentPipeline(
-                config: rec.segmentClustering, sampleRate: Self.sr, maxASRSec: rec.asrModel.maxASRSegmentSec)
-            segments = try pipeline.process(
-                segments, samples: samples, recognizer: engines.recognizer, embedder: engines.embedder, cancel: cancel)
-            
+            let tailAt = cover > 0.05 ? min(trackDur, cover) : 0
+            if trackDur - tailAt > 0.2 {
+                let from = Int((tailAt * Double(Self.sr)).rounded(.down))
+                if from < samples.count {
+                    let tail = Array(samples[from...])
+                    segments.append(contentsOf: try transcribe(
+                        tail, sampleOrigin: tailAt, track: track.kind, offset: track.offset,
+                        extractEmbeddings: embed, cancel: cancel))
+                }
+            }
+            for i in segments.indices { segments[i].id = i }
             allSegments.append(contentsOf: segments)
             progress(.at(.diarization, (Double(ti) + 0.8) / Double(tracks.count)))
         }
@@ -365,7 +413,9 @@ public final class MeetingProcessor {
                 let seg = allSegments[i]
                 let a = Self.slice(micAudio, seg.start - mic.offset, seg.end - mic.offset)
                 let b = Self.slice(sysAudio, seg.start - sys.offset, seg.end - sys.offset)
-                allSegments[i].isEcho = options.echo.isEcho(mic: a, system: b, micGain: mic.gain, systemGain: sys.gain)
+                let detected = options.echo.isEcho(mic: a, system: b, micGain: mic.gain, systemGain: sys.gain)
+                // 录音时已判定为回声且没有做识别的段，保留这个结论。
+                allSegments[i].isEcho = detected || (seg.text.isEmpty && seg.isEcho)
             }
         }
         

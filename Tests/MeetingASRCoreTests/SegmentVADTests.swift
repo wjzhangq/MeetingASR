@@ -190,4 +190,22 @@ final class SegmentVADTests: XCTestCase {
         XCTAssertEqual(segments.count, 1)
         XCTAssertEqual(segments[0].id, 0)
     }
+
+    func testContinueAfterPauseKeepsFileTime() {
+        let mockVAD = MockStreamingVAD()
+        let segmenter = SegmentVAD(vad: mockVAD, track: .mic, config: SegmentVADConfig())
+        let speech = [Float](repeating: 0.1, count: 16_000)
+
+        segmenter.accept(speech)
+        segmenter.flush()
+        XCTAssertEqual(segmenter.drainSegments().count, 1)
+
+        segmenter.continueAfterPause()
+        segmenter.accept(speech)
+        segmenter.flush()
+        let next = segmenter.drainSegments()
+        XCTAssertEqual(next.count, 1)
+        XCTAssertEqual(next[0].id, 1)
+        XCTAssertEqual(next[0].speechStart, 1, accuracy: 0.05)
+    }
 }

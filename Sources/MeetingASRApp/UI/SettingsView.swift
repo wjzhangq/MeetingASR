@@ -236,11 +236,11 @@ private struct RecognitionSettingsView: View {
                 Picker("执行后端", selection: binding(\.inferenceProvider)) {
                     ForEach(InferenceProvider.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
-                Text("神经引擎利用 Apple Silicon 的硬件加速，多数机型上分离与识别更快；部分算子不被支持时会回落到 CPU，遇到异常或变慢可切回 CPU。切换后从下一次识别生效。").font(.caption).foregroundStyle(.secondary)
+                Text("默认使用 CPU。神经引擎在部分机型上更快；变长音频若变慢或内存升高，保持 CPU。切换后从下一次识别生效。").font(.caption).foregroundStyle(.secondary)
             }
-            Section("录音时分离") {
-                Toggle("录音期间在后台提前做说话人分离", isOn: Binding(get: { state.settings.liveDiarization }, set: { state.settings.liveDiarization = $0; state.saveSettings() }))
-                Text("每录满约 2 分钟就在后台（低优先级、2 线程）分离这一段，停止录音后只需处理最后不足 2 分钟的部分，长会议出结果快很多。录音期间会占用一些 CPU。从下一次录音生效。").font(.caption).foregroundStyle(.secondary)
+            Section("录音时识别") {
+                Toggle("录音期间提前识别", isOn: Binding(get: { state.settings.liveDiarization }, set: { state.settings.liveDiarization = $0; state.saveSettings() }))
+                Text("语音段闭合后就在后台做识别和声纹，停止后只补尾段并做聚类。会占用一些 CPU，可随时关闭。从下一次录音生效。").font(.caption).foregroundStyle(.secondary)
             }
             Section("说话人数") {
                 Picker("默认", selection: Binding(get: { state.settings.recognition.defaultSpeakerCount ?? 0 }, set: { state.settings.recognition.defaultSpeakerCount = $0 == 0 ? nil : $0; state.saveSettings() })) {

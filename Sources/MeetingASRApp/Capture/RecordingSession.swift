@@ -5,7 +5,8 @@ import os
 /// 一次录音会话：麦克风与会议软件两轨独立录制（FR-A4），统一会话时钟，元数据实时落盘。
 @MainActor
 final class RecordingSession {
-    static let trackSampleRate = 48_000
+    /// 模型输入就是 16 kHz。采集侧在回调里从设备采样率转过来，文件里不再存 48 kHz。
+    static let trackSampleRate = 16_000
 
     let meeting: MeetingPaths
     private(set) var meta: MeetingMeta
@@ -21,6 +22,8 @@ final class RecordingSession {
     /// 会议软件 Tap 挂载状态变化
     var onTapStatus: ((Bool, [String]) -> Void)?
     var onMicDeviceChange: ((String) -> Void)?
+    /// 已经对齐并写入 WAV 的 16 kHz 样本。在音频 IO 队列回调，不能阻塞。
+    var onTrackSamples: ((TrackKind, [Float], Double) -> Void)?
 
     var state: RecorderState { clock.state }
     var elapsed: Double { clock.elapsed(now: HostTime.now) }
@@ -51,8 +54,10 @@ final class RecordingSession {
         clock.start(at: host)
         var tracks: [TrackInfo] = []
         do {
+            let forward = onTrackSamples
             if options.includeMic {
                 let w = try AlignedTrackWriter(kind: .mic, url: meeting.rawTrack(.mic), sampleRate: Self.trackSampleRate, clock: clock)
+                w.onSamplesWritten = { samples, sessionStart in forward?(.mic, samples, sessionStart) }
                 let r = MicRecorder(writer: w, preferredDeviceUID: options.micDeviceUID, voiceProcessing: options.voiceProcessing)
                 r.onDeviceChange = { [weak self] name in self?.onMicDeviceChange?(name) }
                 try r.start()
@@ -62,6 +67,7 @@ final class RecordingSession {
             }
             if options.includeApp {
                 let w = try AlignedTrackWriter(kind: .system, url: meeting.rawTrack(.system), sampleRate: Self.trackSampleRate, clock: clock)
+                w.onSamplesWritten = { samples, sessionStart in forward?(.system, samples, sessionStart) }
                 let t = ProcessTapRecorder(apps: options.apps, writer: w)
                 t.onStatusChange = { [weak self] attached, ids in self?.onTapStatus?(attached, ids) }
                 try t.start()

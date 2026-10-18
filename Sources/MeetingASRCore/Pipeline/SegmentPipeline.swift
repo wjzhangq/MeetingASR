@@ -71,13 +71,14 @@ public final class SegmentPipeline {
         samples: [Float],
         recognizer: SpeechRecognizer,
         embedder: SpeakerEmbedder,
+        extractEmbeddings: Bool = true,
         cancel: CancellationFlag = CancellationFlag()
     ) throws -> [Segment] {
         guard !segments.isEmpty else { return [] }
 
         let maxAsrSamples = max(1, Int(maxASRSec * Double(sampleRate)))
         let queueASR = SegmentQueue(capacity: 64)
-        let queueEmb = SegmentQueue(capacity: 64)
+        let queueEmb = extractEmbeddings ? SegmentQueue(capacity: 64) : nil
 
         var asrParts: [Int: [(order: Int, text: String, tokens: [TranscriptToken])]] = [:]
         var embeddings: [Int: Segment] = [:]
@@ -90,7 +91,7 @@ public final class SegmentPipeline {
             while let seg = queueASR.dequeue() {
                 if cancel.isCancelled {
                     queueASR.close()
-                    queueEmb.close()
+                    queueEmb?.close()
                     break
                 }
                 var audio = Self.slice(samples, seg.start, seg.end, sampleRate: sampleRate)
@@ -106,10 +107,11 @@ public final class SegmentPipeline {
             }
         }
 
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async { [sampleRate] in
-            defer { group.leave() }
-            while let seg = queueEmb.dequeue() {
+        if let queueEmb {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async { [sampleRate] in
+                defer { group.leave() }
+                while let seg = queueEmb.dequeue() {
                 if cancel.isCancelled {
                     queueASR.close()
                     queueEmb.close()
@@ -119,7 +121,8 @@ public final class SegmentPipeline {
                 self.extractEmbedding(for: &s, samples: samples, embedder: embedder, sampleRate: sampleRate)
                 lock.lock()
                 embeddings[s.id] = s
-                lock.unlock()
+                    lock.unlock()
+                }
             }
         }
 
@@ -145,10 +148,10 @@ public final class SegmentPipeline {
             } else {
                 queueASR.enqueue(seg)
             }
-            queueEmb.enqueue(seg)
+            if let queueEmb { queueEmb.enqueue(seg) }
         }
         queueASR.close()
-        queueEmb.close()
+        queueEmb?.close()
         group.wait()
         try cancel.check()
 
@@ -164,6 +167,9 @@ public final class SegmentPipeline {
                 let ordered = parts.sorted { $0.order < $1.order }
                 s.text = TokenText.joinPieces(ordered.map(\.1))
                 s.tokens = ordered.flatMap(\.2).sorted { $0.start < $1.start }
+            }
+            if !extractEmbeddings {
+                s.isShort = s.speechDuration < config.shortSegmentSec
             }
             s.metadata = nil
             return s

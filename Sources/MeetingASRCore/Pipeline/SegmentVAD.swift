@@ -18,8 +18,10 @@ public final class SegmentVAD {
     private let config: SegmentVADConfig
     private let sampleRate: Int
     
-    /// 已送入音频的总时长（秒）
+    /// 已送入音频的总时长（秒），按文件时间轴累计，暂停不会把它清零。
     private var totalSec: Double = 0
+    /// 流式 VAD 被重置后，它自己的时间从 0 开始；这里记下对应的文件时间。
+    private var timeOrigin: Double = 0
     /// 下一个段的 ID
     private var nextId = 0
     
@@ -40,13 +42,13 @@ public final class SegmentVAD {
     public func nextSegment() -> Segment? {
         guard let raw = vad.next() else { return nil }
         
-        let speechStart = raw.lowerBound
-        let speechEnd = raw.upperBound
-        
-        // 补边：前扩 padBefore、后扩 padAfter，裁到 [0, totalSec]
+        return makeSegment(speechStart: raw.lowerBound + timeOrigin, speechEnd: raw.upperBound + timeOrigin)
+    }
+
+    /// 用文件时间轴上的语音边界生成一段，并占用一个段编号。
+    public func makeSegment(speechStart: Double, speechEnd: Double) -> Segment {
         let start = max(0, speechStart - config.padBefore)
         let end = min(totalSec, speechEnd + config.padAfter)
-        
         let seg = Segment(
             id: nextId,
             track: track,
@@ -56,7 +58,6 @@ public final class SegmentVAD {
             speechEnd: speechEnd
         )
         nextId += 1
-        
         return seg
     }
     
@@ -73,10 +74,24 @@ public final class SegmentVAD {
     public func flush() {
         vad.flush()
     }
+
+    /// 暂停后继续。先 `flush` 并取完已闭合的段，再调用本方法：流式 VAD 重新计时，文件时间轴不回退。
+    public func continueAfterPause() {
+        timeOrigin = totalSec
+        vad.reset()
+    }
+
+    /// 强制切开超长语音后，从 `fileTime` 重放后续样本。`totalSec` 保持为文件里已经收到的时长。
+    public func restart(at fileTime: Double, replay: [Float]) {
+        timeOrigin = fileTime
+        vad.reset()
+        if !replay.isEmpty { vad.accept(replay) }
+    }
     
     public func reset() {
         vad.reset()
         totalSec = 0
         nextId = 0
+        timeOrigin = 0
     }
 }

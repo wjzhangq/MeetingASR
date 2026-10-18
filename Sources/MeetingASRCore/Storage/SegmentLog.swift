@@ -92,5 +92,29 @@ public enum SegmentLog {
     public static func remove(meeting: MeetingPaths, track: TrackKind) {
         let url = self.url(meeting, track: track)
         try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: coverageURL(meeting, track: track))
+    }
+
+    /// 已完成识别的文件时间（秒）。指纹不一致时视为没有进度。
+    public static func coveredUntil(meeting: MeetingPaths, track: TrackKind, key: SegmentLogKey) -> Double {
+        guard FileManager.default.fileExists(atPath: url(meeting, track: track).path),
+              let content = try? String(contentsOf: url(meeting, track: track), encoding: .utf8) else { return 0 }
+        let first = content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        guard first == "key " + key.fingerprint else { return 0 }
+        let cover = coverageURL(meeting, track: track)
+        guard let text = try? String(contentsOf: cover, encoding: .utf8),
+              let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value >= 0 else { return 0 }
+        return value
+    }
+
+    /// 记录这条音轨已经处理到的文件时间。调用方需先写好参数指纹。
+    public static func writeCoveredUntil(_ seconds: Double, meeting: MeetingPaths, track: TrackKind) throws {
+        let url = coverageURL(meeting, track: track)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try String(format: "%.4f\n", seconds).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private static func coverageURL(_ meeting: MeetingPaths, track: TrackKind) -> URL {
+        meeting.rawDir.appendingPathComponent("segments_\(track.rawValue).cover")
     }
 }
