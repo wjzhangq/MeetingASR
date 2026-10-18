@@ -146,18 +146,14 @@ final class PipelineTests: XCTestCase {
     }
 
     func testFullPipelineTwoTracksThenAutoMatch() throws {
-        try runFullPipeline(mode: .asrFirst)
+        try runFullPipeline()
     }
 
-    func testFullPipelineSegmentMode() throws {
-        try runFullPipeline(mode: .segment)
-    }
-
-    func runFullPipeline(mode: RecognitionMode) throws {
+    func runFullPipeline() throws {
         let store = MeetingStore(layout: layout)
         let people = PeopleStore(layout: layout)
         var opts = ProcessingOptions()
-        opts.recognition.recognitionMode = mode
+        opts.recognition.recognitionMode = .segmentStream
         opts.hotwords = HotwordList(words: ["星图平台"])
         let proc = MeetingProcessor(engines: engines(), store: store, people: people, options: opts)
 
@@ -227,21 +223,17 @@ final class PipelineTests: XCTestCase {
     }
 
     func testSingleTrackFileWithRangeAndExpectedSpeakers() throws {
-        try runSingleTrack(mode: .asrFirst)
+        try runSingleTrack()
     }
 
-    func testSingleTrackFileSegmentMode() throws {
-        try runSingleTrack(mode: .segment)
-    }
-
-    func runSingleTrack(mode: RecognitionMode) throws {
+    func runSingleTrack() throws {
         let src = layout.root.appendingPathComponent("input/访谈.wav")
         try WavWriter.writeMono(track(rate: 16_000, seconds: 30, parts: [(0, 8, 250), (9, 15, 450), (16, 29, 250)]), sampleRate: 16_000, to: src)
         let m = try MeetingFactory.createFileMeeting(source: src, range: 5...20, expectedSpeakers: 2, layout: layout)
         XCTAssertTrue(m.name.hasSuffix("_访谈"))
         let e = engines()
         var opts = ProcessingOptions()
-        opts.recognition.recognitionMode = mode
+        opts.recognition.recognitionMode = .segmentStream
         let proc = MeetingProcessor(engines: e, store: MeetingStore(layout: layout), people: PeopleStore(layout: layout), options: opts)
         let t = try proc.process(m)
         XCTAssertEqual((e.diarizer as! MockDiarizer).lastOptions?.numSpeakers, 2)

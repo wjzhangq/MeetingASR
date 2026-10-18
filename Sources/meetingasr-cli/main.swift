@@ -8,6 +8,7 @@ let usage = """
 用法：
   meetingasr-cli recognize <音频文件> [--from 秒] [--to 秒] [--speakers N] [--keep-work]
   meetingasr-cli process <会议目录名>            重新识别未完成的会议
+  meetingasr-cli sweep <会议目录列表文件>         参数扫描（M0 评估）
   meetingasr-cli list                           最近会议
   meetingasr-cli show <会议目录名>               打印 Markdown 逐字稿
   meetingasr-cli name <会议目录名> <S1> <姓名>    为说话人命名（姓名为空则清除）
@@ -22,7 +23,15 @@ let usage = """
   --threshold X     聚类阈值（默认 0.5）
   --match X         声纹匹配阈值（默认 0.6）
   --asr-model M     识别模型：paraformer（默认）| firered-ctc | firered-aed
-  --mode M          识别方式：asr-first（默认，先识别再分配说话人）| segment（按说话人分段识别）
+
+段流水线参数：
+  --vad-min-silence X       VAD 最小静音时长（秒，默认 0.4）
+  --vad-max-speech X        VAD 最大段长（秒，默认 12）
+  --merge-similarity X      簇合并阈值（默认 0.38）
+  --min-cluster-sec X       小簇合并下限（秒，默认 3.0）
+  --short-assign-sim X      短段归属阈值（默认 0.25）
+  --mixed-valley X          混合段检测低谷（默认 0.3）
+  --smooth-run-sec X        混合段标签平滑长度（秒，默认 1.5）
 """
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -58,13 +67,14 @@ let asrModel: AsrModelKind? = option("--asr-model").map { name in
     guard let k = AsrModelKind(cliName: name) else { fail("未知的识别模型：\(name)") }
     return k
 }
-let mode: RecognitionMode? = option("--mode").map { name in
-    switch name {
-    case "asr-first": return .asrFirst
-    case "segment": return .segment
-    default: fail("未知的识别方式：\(name)")
-    }
-}
+// 段流水线参数（--mode 已废弃，只保留 segmentStream）
+let vadMinSilence = option("--vad-min-silence").flatMap(Float.init)
+let vadMaxSpeech = option("--vad-max-speech").flatMap(Float.init)
+let mergeSimilarity = option("--merge-similarity").flatMap(Double.init)
+let minClusterSec = option("--min-cluster-sec").flatMap(Double.init)
+let shortAssignSim = option("--short-assign-sim").flatMap(Double.init)
+let mixedValley = option("--mixed-valley").flatMap(Double.init)
+let smoothRunSec = option("--smooth-run-sec").flatMap(Double.init)
 
 guard let command = args.first else { fail(usage) }
 args.removeFirst()
@@ -78,7 +88,17 @@ func makeProcessor() -> MeetingProcessor {
     }
     var settings = AppSettings.load()
     if let asrModel { settings.recognition.asrModel = asrModel }
-    if let mode { settings.recognition.recognitionMode = mode }
+    settings.recognition.recognitionMode = .segmentStream  // 唯一模式
+
+    // 段流水线参数（在引擎创建前应用，VAD 初始化需要它们）
+    if let vadMinSilence { settings.recognition.segmentVAD.minSilenceDuration = vadMinSilence }
+    if let vadMaxSpeech { settings.recognition.segmentVAD.maxSpeechDuration = vadMaxSpeech }
+    if let mergeSimilarity { settings.recognition.segmentClustering.mergeSimilarity = mergeSimilarity }
+    if let minClusterSec { settings.recognition.segmentClustering.minClusterSec = minClusterSec }
+    if let shortAssignSim { settings.recognition.segmentClustering.shortAssignSimilarity = shortAssignSim }
+    if let mixedValley { settings.recognition.segmentClustering.mixedValley = mixedValley }
+    if let smoothRunSec { settings.recognition.segmentClustering.smoothRunSec = smoothRunSec }
+
     let kind = settings.recognition.asrModel
     if !paths.hasASR(kind) {
         let dir = paths.root.appendingPathComponent(kind.directory).path
@@ -87,11 +107,12 @@ func makeProcessor() -> MeetingProcessor {
     }
     let t0 = Date()
     let engines: EngineSet
-    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString) } catch { fail("\(error)") }
+    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString, vadConfig: settings.recognition.segmentVAD) } catch { fail("\(error)") }
     FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（%@，sherpa-onnx %@）\n", Date().timeIntervalSince(t0), engines.recognizer.modelName, SherpaEngineFactory.version).utf8))
     settings.recognition.numThreads = threads
     if let threshold { settings.recognition.clusterThreshold = threshold }
     if let match { settings.recognition.matchThreshold = match }
+
     var opts = ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load())
     opts.deleteRawOnSuccess = !keepWork
     people.maxSamplesPerPerson = settings.recognition.maxSamplesPerPerson
@@ -145,6 +166,81 @@ case "recognize":
 
 case "process":
     run(meeting(args.first))
+
+case "sweep":
+    guard let listFile = args.first else { fail("用法：meetingasr-cli sweep <会议列表文件>\n文件格式：每行一个会议目录名，# 开头为注释") }
+    guard FileManager.default.fileExists(atPath: listFile) else { fail("文件不存在：\(listFile)") }
+
+    let meetingNames = (try? String(contentsOfFile: listFile, encoding: .utf8))?
+        .split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty && !$0.hasPrefix("#") } ?? []
+
+    guard !meetingNames.isEmpty else { fail("列表文件为空") }
+
+    // 参数网格
+    let vadMinSilenceGrid: [Float] = [0.3, 0.4, 0.5]
+    let mergeSimilarityGrid: [Double] = [0.36, 0.38, 0.40]
+    let minClusterSecGrid: [Double] = [2.0, 3.0, 4.0]
+
+    // 模型只加载一次，各网格点共用
+    guard let sweepPaths = modelsDir.map({ ModelPaths(root: URL(fileURLWithPath: $0)) }) ?? ModelPaths.locate() else {
+        fail("找不到模型目录，请先运行 scripts/fetch-models.sh 或指定 --models")
+    }
+    var baseSettings = AppSettings.load()
+    if let asrModel { baseSettings.recognition.asrModel = asrModel }
+    baseSettings.recognition.recognitionMode = .segmentStream
+    baseSettings.recognition.numThreads = threads
+    if let match { baseSettings.recognition.matchThreshold = match }
+
+    let sweepEngines: EngineSet
+    do {
+        sweepEngines = try SherpaEngineFactory.make(
+            paths: sweepPaths, numThreads: threads,
+            asrModel: baseSettings.recognition.asrModel,
+            provider: baseSettings.recognition.inferenceProvider.providerString)
+    } catch { fail("\(error)") }
+
+    let gridSize = vadMinSilenceGrid.count * mergeSimilarityGrid.count * minClusterSecGrid.count
+    FileHandle.standardError.write(Data("参数扫描：\(meetingNames.count) 个会议 × \(gridSize) 组参数\n".utf8))
+    print("meeting,vad_min_silence,merge_similarity,min_cluster_sec,duration_sec,processing_sec,num_speakers,num_segments")
+
+    for name in meetingNames {
+        let m = layout.meeting(named: name)
+        guard FileManager.default.fileExists(atPath: m.meta.path) else {
+            FileHandle.standardError.write(Data("跳过（会议不存在）：\(name)\n".utf8))
+            continue
+        }
+        FileHandle.standardError.write(Data("\(name) ".utf8))
+
+        for vadMS in vadMinSilenceGrid {
+            for mergeSim in mergeSimilarityGrid {
+                for minCluster in minClusterSecGrid {
+                    var settings = baseSettings
+                    settings.recognition.segmentVAD.minSilenceDuration = vadMS
+                    settings.recognition.segmentClustering.mergeSimilarity = mergeSim
+                    settings.recognition.segmentClustering.minClusterSec = minCluster
+
+                    var opts = ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load())
+                    // 扫描要反复处理同一会议，必须保留原始音频
+                    opts.deleteRawOnSuccess = false
+
+                    let proc = MeetingProcessor(engines: sweepEngines, store: store, people: people, options: opts)
+                    let t0 = Date()
+                    do {
+                        let t = try proc.process(m)
+                        let elapsed = Date().timeIntervalSince(t0)
+                        print("\(name),\(vadMS),\(mergeSim),\(minCluster),\(t.durationSec),\(String(format: "%.2f", elapsed)),\(t.speakers.count),\(t.segments.count)")
+                        FileHandle.standardError.write(Data(".".utf8))
+                    } catch {
+                        FileHandle.standardError.write(Data("\n✗ \(name) [vad=\(vadMS) merge=\(mergeSim) min=\(minCluster)]：\(error)\n".utf8))
+                    }
+                }
+            }
+        }
+        FileHandle.standardError.write(Data("\n".utf8))
+    }
+    FileHandle.standardError.write(Data("扫描完成\n".utf8))
 
 case "list":
     for s in store.recentMeetings(limit: 20) {

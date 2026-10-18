@@ -59,16 +59,11 @@ public struct HotkeySetting: Codable, Sendable, Hashable {
 
 /// 识别方式。
 public enum RecognitionMode: String, Codable, Sendable, CaseIterable {
-    /// 先按长句识别，再按字级时间戳分配说话人（上下文完整、重叠语音只识别一次）
-    case asrFirst
-    /// 先分离，再按说话人段逐段识别
-    case segment
+    /// VAD 切段 + 并行 ASR/声纹 + 球面 K-Means 聚类
+    case segmentStream
 
     public var displayName: String {
-        switch self {
-        case .asrFirst: return "先识别，再分配说话人（推荐）"
-        case .segment: return "按说话人分段识别"
-        }
+        "段流水线（VAD 驱动）"
     }
 }
 
@@ -169,7 +164,11 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     /// 默认说话人数，nil 为自动
     public var defaultSpeakerCount: Int?
     /// 识别方式；模型不输出字级时间戳时自动退回按段识别
-    public var recognitionMode: RecognitionMode = .asrFirst
+    public var recognitionMode: RecognitionMode = .segmentStream
+    /// VAD 分段参数（仅 segmentStream 模式使用）
+    public var segmentVAD = SegmentVADConfig()
+    /// 段级聚类参数（仅 segmentStream 模式使用）
+    public var segmentClustering = SegmentClusteringConfig()
     /// 语音识别模型；所选模型未安装时使用 Paraformer
     public var asrModel: AsrModelKind = .paraformer
     /// 推理后端（CPU / 神经引擎）
@@ -270,6 +269,8 @@ extension RecognitionSettings {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         defaultSpeakerCount = try c.decodeIfPresent(Int.self, forKey: .defaultSpeakerCount)
         recognitionMode = (try? c.decodeIfPresent(RecognitionMode.self, forKey: .recognitionMode)) ?? recognitionMode
+        segmentVAD = try c.decodeIfPresent(SegmentVADConfig.self, forKey: .segmentVAD) ?? segmentVAD
+        segmentClustering = try c.decodeIfPresent(SegmentClusteringConfig.self, forKey: .segmentClustering) ?? segmentClustering
         asrModel = (try? c.decodeIfPresent(AsrModelKind.self, forKey: .asrModel)) ?? asrModel
         inferenceProvider = (try? c.decodeIfPresent(InferenceProvider.self, forKey: .inferenceProvider)) ?? inferenceProvider
         clusterThreshold = try c.decodeIfPresent(Float.self, forKey: .clusterThreshold) ?? clusterThreshold
