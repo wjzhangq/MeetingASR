@@ -100,8 +100,14 @@ final class EstimatedTokensTests: XCTestCase {
 
     func testAsrModelNames() {
         XCTAssertEqual(AsrModelKind(cliName: "firered-ctc"), .fireRedAsrCtc)
+        XCTAssertEqual(AsrModelKind(cliName: "sensevoice"), .senseVoice)
         XCTAssertNil(AsrModelKind(cliName: "whisper"))
         XCTAssertFalse(AsrModelKind.fireRedAsrAed.providesTimestamps)
+        XCTAssertTrue(AsrModelKind.senseVoice.providesTimestamps)
         XCTAssertEqual(AsrModelKind.fireRedAsrCtc.releaseURL.lastPathComponent, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2")
+        XCTAssertEqual(AsrModelKind.senseVoice.directory, "asr-sensevoice")
+        XCTAssertEqual(AsrModelKind.senseVoice.modelName, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
+        XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("model.onnx"))
+        XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("tokens.txt"))
     }
 }

@@ -35,6 +35,14 @@ public final class SherpaRecognizer: SpeechRecognizer {
                 fireRedAsr: sherpaOnnxOfflineFireRedAsrModelConfig(
                     encoder: dir.appendingPathComponent("encoder.int8.onnx").path,
                     decoder: dir.appendingPathComponent("decoder.int8.onnx").path))
+        case .senseVoice:
+            // language 留空由模型自动判别语种（会议里中英混说更稳）；ITN 把"二零二五"写成"2025"。
+            model = sherpaOnnxOfflineModelConfig(
+                tokens: tokens, numThreads: numThreads, provider: provider,
+                senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(
+                    model: dir.appendingPathComponent("model.onnx").path,
+                    language: "",
+                    useInverseTextNormalization: true))
         }
         var config = sherpaOnnxOfflineRecognizerConfig(featConfig: sherpaOnnxFeatureConfig(sampleRate: 16_000, featureDim: 80), modelConfig: model)
         recognizer = SherpaOnnxOfflineRecognizer(config: &config)
