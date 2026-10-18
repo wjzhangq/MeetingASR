@@ -2,7 +2,7 @@ import Foundation
 import MeetingASRCore
 import MeetingASREngine
 
-/// 额外识别模型（FireRedASR）的下载安装：从 sherpa-onnx 发布页下载，解压到用户模型目录。
+/// 额外识别模型的下载安装：从 sherpa-onnx 发布页下载，解压到用户模型目录。
 @MainActor
 final class AsrModelInstaller: ObservableObject {
     enum State: Equatable {

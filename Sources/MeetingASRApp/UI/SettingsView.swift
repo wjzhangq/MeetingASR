@@ -224,7 +224,7 @@ private struct RecognitionSettingsView: View {
                         Text("安装失败：\(msg)").font(.caption).foregroundStyle(.red)
                     }
                 }
-                Text("FireRedASR 对中英混说与技术术语更准，但模型更大（数百 MB 至 1 GB 以上）、更慢；CTC 版输出字级时间戳，AED 版不输出（自动按段识别）。切换后从下一次识别生效。").font(.caption).foregroundStyle(.secondary)
+                Text("SenseVoice 支持中英日韩粤多语种。切换后从下一次识别生效。").font(.caption).foregroundStyle(.secondary)
             }
             Section("识别方式") {
                 Picker("方式", selection: binding(\.recognitionMode)) {

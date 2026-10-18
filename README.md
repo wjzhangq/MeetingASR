@@ -301,23 +301,22 @@ App 只在菜单栏显示图标（不出现在 Dock）。首次启动会显示�
 | `asr-first` | 按音轨组合成 10~25s 长句块识别，再按字级时间戳分配说话人；ASR 上下文最完整 |
 | `segment` | 先分离（pyannote / 固定窗口）再按说话人段逐段识别；兼容旧流程与对比测试 |
 
-模型不输出字级时间戳（FireRedASR-AED）时自动退回按段识别。
-
-**热词**：sherpa-onnx 的热词（contextual biasing）不支持离线 Paraformer / FireRedASR，因此采用后处理纠错——中文热词按拼音近似匹配同长度片段（三字以上允许一个模糊音：平翘舌、n/l、h/f、r/l、前后鼻音），英文热词忽略大小写规范写法。人物库中的姓名自动加入热词。
+**热词**：sherpa-onnx 的热词（contextual biasing）不支持离线 Paraformer / SenseVoice，因此采用后处理纠错——中文热词按拼音近似匹配同长度片段（三字以上允许一个模糊音：平翘舌、n/l、h/f、r/l、前后鼻音），英文热词忽略大小写规范写法。人物库中的姓名自动加入热词。
 
 ---
 
-### 识别模型：FireRedASR（可选）
+### 识别模型：SenseVoice（可选）
 
-默认使用 Paraformer-zh。对中英混说、技术术语要求更高时，可在 设置 › 识别 › 识别模型 中选择 FireRedASR 并点击“下载安装”（从 sherpa-onnx 发布页下载到 `~/Library/Application Support/MeetingASR/models/`），从下一次识别生效：
+默认使用 Paraformer-zh。需要多语种支持时，可在 设置 › 识别 › 识别模型 中选择 SenseVoice 并点击”下载安装”（从 sherpa-onnx 发布页下载到 `~/Library/Application Support/MeetingASR/models/`），从下一次识别生效：
 
 | 模型 | 目录 | 字级时间戳 | 说明 |
 |---|---|---|---|
-| Paraformer-zh | `asr/` | 有 | 默认，随 App 下载 |
-| FireRedASR2-CTC 中英 | `asr-firered-ctc/`（model.int8.onnx、tokens.txt） | 有 | 推荐的升级选项，支持“先识别再分配说话人” |
-| FireRedASR-AED Large 中英 | `asr-firered-aed/`（encoder/decoder.int8.onnx、tokens.txt） | 无 | 准确率最高、最慢，自动按段识别 |
+| Paraformer-zh | `asr/` | 有 | 默认，随 App 下载，中文 |
+| SenseVoice | `asr-sensevoice/`（model.onnx、tokens.txt） | 有 | 支持中英日韩粤多语种，自动语种识别 |
 
-开发时也可以用脚本下载：`scripts/fetch-models.sh --with-asr firered-ctc`（或 `firered-aed`）。所选模型未安装时自动使用 Paraformer，结果的 `models.asr` 记录实际使用的模型。
+**下载地址**：[sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2)
+
+开发时也可以用脚本下载：`scripts/fetch-models.sh --with-asr sensevoice`。所选模型未安装时自动使用 Paraformer，结果的 `models.asr` 记录实际使用的模型。
 
 ---
 
@@ -331,7 +330,7 @@ export MEETINGASR_MODELS=$PWD/Resources/models
 
 .build/release/meetingasr-cli recognize 会议.m4a                     # 识别整个文件
 .build/release/meetingasr-cli recognize 会议.m4a --from 60 --to 1800 --speakers 4
-.build/release/meetingasr-cli recognize 会议.m4a --asr-model firered-ctc   # 指定识别模型
+.build/release/meetingasr-cli recognize 会议.m4a --asr-model sensevoice   # 指定识别模型
 .build/release/meetingasr-cli recognize 会议.m4a --mode asr-first          # 先识别再分配（对比用）
 
 # 参数调优（段流水线模式）

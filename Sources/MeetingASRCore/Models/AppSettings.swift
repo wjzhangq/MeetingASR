@@ -89,18 +89,12 @@ public enum InferenceProvider: String, Codable, Sendable, CaseIterable {
 public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     /// Paraformer-zh（随 App 下载，默认）
     case paraformer
-    /// FireRedASR2-CTC 中英（输出字级时间戳）
-    case fireRedAsrCtc
-    /// FireRedASR-AED large 中英（准确率更高、更慢，不输出字级时间戳）
-    case fireRedAsrAed
     /// SenseVoice 中英日韩粤（输出字级时间戳，ITN）
     case senseVoice
 
     public var displayName: String {
         switch self {
         case .paraformer: return "Paraformer-zh（默认）"
-        case .fireRedAsrCtc: return "FireRedASR2-CTC 中英"
-        case .fireRedAsrAed: return "FireRedASR-AED Large 中英"
         case .senseVoice: return "SenseVoice 中英日韩粤"
         }
     }
@@ -109,8 +103,6 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     public var directory: String {
         switch self {
         case .paraformer: return "asr"
-        case .fireRedAsrCtc: return "asr-firered-ctc"
-        case .fireRedAsrAed: return "asr-firered-aed"
         case .senseVoice: return "asr-sensevoice"
         }
     }
@@ -118,8 +110,7 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     /// 模型目录中需要的文件
     public var requiredFiles: [String] {
         switch self {
-        case .paraformer, .fireRedAsrCtc: return ["model.int8.onnx", "tokens.txt"]
-        case .fireRedAsrAed: return ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"]
+        case .paraformer: return ["model.int8.onnx", "tokens.txt"]
         case .senseVoice: return ["model.onnx", "tokens.txt"]
         }
     }
@@ -128,8 +119,6 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     public var releasePackage: String {
         switch self {
         case .paraformer: return "sherpa-onnx-paraformer-zh-2023-09-14"
-        case .fireRedAsrCtc: return "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25"
-        case .fireRedAsrAed: return "sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16"
         case .senseVoice: return "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
         }
     }
@@ -142,24 +131,20 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     public var modelName: String {
         switch self {
         case .paraformer: return "sherpa-onnx-paraformer-zh"
-        case .fireRedAsrCtc: return "sherpa-onnx-fire-red-asr2-ctc-zh_en"
-        case .fireRedAsrAed: return "sherpa-onnx-fire-red-asr-large-zh_en"
         case .senseVoice: return "sherpa-onnx-sense-voice-zh-en-ja-ko-yue"
         }
     }
 
     /// 是否输出字级时间戳
-    public var providesTimestamps: Bool { self != .fireRedAsrAed }
+    public var providesTimestamps: Bool { true }
 
-    /// 单次送入 ASR 的音频上限（秒）。FireRedASR-CTC 超过约 60 秒会在 ONNX 里崩溃。
+    /// 单次送入 ASR 的音频上限（秒）
     public var maxASRSegmentSec: Double { 60 }
 
     /// 命令行与脚本中的名称
     public var cliName: String {
         switch self {
         case .paraformer: return "paraformer"
-        case .fireRedAsrCtc: return "firered-ctc"
-        case .fireRedAsrAed: return "firered-aed"
         case .senseVoice: return "sensevoice"
         }
     }

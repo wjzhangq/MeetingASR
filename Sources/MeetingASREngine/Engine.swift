@@ -5,7 +5,7 @@ import SherpaOnnxC
 
 // sherpa-onnx 适配层：把上游 Swift 封装接到 MeetingASRCore 的引擎协议上。
 
-/// 离线识别：Paraformer-zh / FireRedASR2-CTC / FireRedASR-AED。
+/// 离线识别：Paraformer-zh / SenseVoice。
 public final class SherpaRecognizer: SpeechRecognizer {
     public let kind: AsrModelKind
     public var modelName: String { kind.modelName }
@@ -25,16 +25,6 @@ public final class SherpaRecognizer: SpeechRecognizer {
                 tokens: tokens,
                 paraformer: sherpaOnnxOfflineParaformerModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path),
                 numThreads: numThreads, provider: provider)
-        case .fireRedAsrCtc:
-            model = sherpaOnnxOfflineModelConfig(
-                tokens: tokens, numThreads: numThreads, provider: provider,
-                fireRedAsrCtc: sherpaOnnxOfflineFireRedAsrCtcModelConfig(model: dir.appendingPathComponent("model.int8.onnx").path))
-        case .fireRedAsrAed:
-            model = sherpaOnnxOfflineModelConfig(
-                tokens: tokens, numThreads: numThreads, provider: provider,
-                fireRedAsr: sherpaOnnxOfflineFireRedAsrModelConfig(
-                    encoder: dir.appendingPathComponent("encoder.int8.onnx").path,
-                    decoder: dir.appendingPathComponent("decoder.int8.onnx").path))
         case .senseVoice:
             // language 留空由模型自动判别语种（会议里中英混说更稳）；ITN 把"二零二五"写成"2025"。
             model = sherpaOnnxOfflineModelConfig(

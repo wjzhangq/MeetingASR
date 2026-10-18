@@ -102,7 +102,7 @@ public enum TurnAssembler {
             let start = current.map(\.start).min() ?? first.start
             let end = current.map(\.end).max() ?? first.end
             
-            // 有字级时间戳时按 token 拼接；没有时间戳的模型（如 FireRedASR-AED）回退到段文本。
+            // 有字级时间戳时按 token 拼接；没有时间戳的模型回退到段文本。
             let text = TokenText.joinPieces(current.map { seg in
                 seg.tokens.isEmpty ? seg.text : TokenText.join(seg.tokens.sorted { $0.start < $1.start })
             })

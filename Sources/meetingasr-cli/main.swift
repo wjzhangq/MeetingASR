@@ -22,7 +22,7 @@ let usage = """
   --threads N       推理线程数（默认按 CPU 核数）
   --threshold X     聚类阈值（默认 0.5）
   --match X         声纹匹配阈值（默认 0.6）
-  --asr-model M     识别模型：paraformer（默认）| firered-ctc | firered-aed
+  --asr-model M     识别模型：paraformer（默认）| sensevoice
 
 段流水线参数：
   --vad-min-silence X       VAD 最小静音时长（秒，默认 0.4）

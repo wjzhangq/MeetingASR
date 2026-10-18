@@ -121,7 +121,7 @@ final class SegmentFixTests: XCTestCase {
         try SegmentLog.append(seg, to: url)
         XCTAssertEqual(SegmentLog.usableSegments(meeting: meeting, track: .file, key: key).map(\.text), ["甲"])
         var other = key
-        other.asrModel = "firered"
+        other.asrModel = "sensevoice"
         XCTAssertTrue(SegmentLog.usableSegments(meeting: meeting, track: .file, key: other).isEmpty)
     }
 }

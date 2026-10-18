@@ -34,7 +34,7 @@ extension RecognitionResult {
     }
 }
 
-/// 离线语音识别（Paraformer-zh / FireRedASR）。输入 16kHz 单声道。
+/// 离线语音识别（Paraformer-zh / SenseVoice）。输入 16kHz 单声道。
 public protocol SpeechRecognizer: AnyObject {
     var modelName: String { get }
     /// 是否输出字级时间戳（“先识别再分配说话人”需要）

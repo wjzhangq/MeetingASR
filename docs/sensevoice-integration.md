@@ -203,7 +203,7 @@ cat output/transcript.json | jq '.segments[0].tokens | length'
 
 ### 性能测试
 1. 实测 RTF 并更新文档
-2. 对比 Paraformer / FireRedASR / SenseVoice 准确率
+2. 对比 Paraformer / SenseVoice 准确率
 3. 长音频（60+ 分钟）稳定性测试
 
 ### 高级功能研究

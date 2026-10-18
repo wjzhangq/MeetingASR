@@ -52,13 +52,13 @@ final class SubwordMergerTests: XCTestCase {
     }
 
     func testSentencePiece() {
-        let t = SubwordMerger.merge([("测", 0), ("▁fire", 0.2), ("red", 0.3), ("▁asr", 0.5), ("模", 0.7), ("型", 0.8), ("<unk>", 0.9)])
-        XCTAssertEqual(t.map(\.t), ["测", "fire" + "red", "asr", "模", "型"])
-        XCTAssertEqual(TokenText.join(t), "测 firered asr 模型")
+        let t = SubwordMerger.merge([("测", 0), ("▁sense", 0.2), ("voice", 0.3), ("▁asr", 0.5), ("模", 0.7), ("型", 0.8), ("<unk>", 0.9)])
+        XCTAssertEqual(t.map(\.t), ["测", "sense" + "voice", "asr", "模", "型"])
+        XCTAssertEqual(TokenText.join(t), "测 sensevoice asr 模型")
     }
 
     func testSpecialTokenFiltering() {
-        // FireRedASR 的静音和语言标记应被过滤
+        // SenseVoice 的静音和语言标记应被过滤
         let t = SubwordMerger.merge([
             ("说", 0),
             ("<sil>", 0.1),
@@ -88,9 +88,9 @@ final class SubwordMergerTests: XCTestCase {
 
 final class EstimatedTokensTests: XCTestCase {
     func testEstimatedWhenModelHasNoTimestamps() {
-        let r = RecognitionResult(text: "用 FireRed 识别，好的。")
+        let r = RecognitionResult(text: "用 SenseVoice 识别，好的。")
         let t = r.tokensOrEstimated(start: 1, end: 3)
-        XCTAssertEqual(t.map(\.t), ["用", "FireRed", "识", "别", "好", "的"])
+        XCTAssertEqual(t.map(\.t), ["用", "SenseVoice", "识", "别", "好", "的"])
         XCTAssertEqual(t.first?.start, 1)
         XCTAssertLessThan(t.last!.start, 3)
         // 有时间戳时原样返回
@@ -99,12 +99,12 @@ final class EstimatedTokensTests: XCTestCase {
     }
 
     func testAsrModelNames() {
-        XCTAssertEqual(AsrModelKind(cliName: "firered-ctc"), .fireRedAsrCtc)
+        XCTAssertEqual(AsrModelKind(cliName: "paraformer"), .paraformer)
         XCTAssertEqual(AsrModelKind(cliName: "sensevoice"), .senseVoice)
         XCTAssertNil(AsrModelKind(cliName: "whisper"))
-        XCTAssertFalse(AsrModelKind.fireRedAsrAed.providesTimestamps)
+        XCTAssertTrue(AsrModelKind.paraformer.providesTimestamps)
         XCTAssertTrue(AsrModelKind.senseVoice.providesTimestamps)
-        XCTAssertEqual(AsrModelKind.fireRedAsrCtc.releaseURL.lastPathComponent, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2")
+        XCTAssertEqual(AsrModelKind.senseVoice.releaseURL.lastPathComponent, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2")
         XCTAssertEqual(AsrModelKind.senseVoice.directory, "asr-sensevoice")
         XCTAssertEqual(AsrModelKind.senseVoice.modelName, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
         XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("model.onnx"))
