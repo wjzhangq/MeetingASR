@@ -98,6 +98,8 @@ public final class AlignedTrackWriter: @unchecked Sendable {
     private var startSessionTime: Double = 0
     /// 允许的时间偏差，超过则补静音或裁剪
     public var tolerance: Double = 0.05
+    /// 实际写入文件的样本（含补上的静音）及其第一帧的会话时间。在写锁之外回调。
+    public var onSamplesWritten: (([Float], Double) -> Void)?
 
     public init(kind: TrackKind, url: URL, sampleRate: Int, clock: SessionClock) throws {
         self.kind = kind
@@ -118,7 +120,8 @@ public final class AlignedTrackWriter: @unchecked Sendable {
     /// - Parameter hostTime: 该缓冲首帧的主机时间（秒）
     public func append(_ samples: [Float], hostTime: Double) {
         guard !samples.isEmpty, let t = clock.sessionTime(atHost: hostTime) else { return }
-        lock.lock(); defer { lock.unlock() }
+        var pieces: [([Float], Double)] = []
+        lock.lock()
         if firstHostTime == nil {
             firstHostTime = hostTime
             startSessionTime = t
@@ -127,14 +130,36 @@ public final class AlignedTrackWriter: @unchecked Sendable {
         let written = writer.framesWritten
         let tol = Int64(tolerance * Double(sampleRate))
         if expected > written + tol {
-            writer.writeSilence(frames: Int(expected - written))
+            var gap = Int(expected - written)
+            var session = startSessionTime + Double(written) / Double(sampleRate)
+            while gap > 0 {
+                let n = min(sampleRate, gap)
+                let zeros = [Float](repeating: 0, count: n)
+                writer.write(zeros)
+                pieces.append((zeros, session))
+                session += Double(n) / Double(sampleRate)
+                gap -= n
+            }
             writer.write(samples)
+            pieces.append((samples, session))
         } else if expected < written - tol {
             // 数据与已写内容重叠（时钟抖动），丢弃重叠部分
             let skip = Int(min(Int64(samples.count), written - expected))
-            if skip < samples.count { writer.write(Array(samples[skip...])) }
+            if skip < samples.count {
+                let tail = Array(samples[skip...])
+                let session = startSessionTime + Double(written) / Double(sampleRate)
+                writer.write(tail)
+                pieces.append((tail, session))
+            }
         } else {
+            let session = startSessionTime + Double(written) / Double(sampleRate)
             writer.write(samples)
+            pieces.append((samples, session))
+        }
+        let callback = onSamplesWritten
+        lock.unlock()
+        for (chunk, session) in pieces {
+            callback?(chunk, session)
         }
     }
 

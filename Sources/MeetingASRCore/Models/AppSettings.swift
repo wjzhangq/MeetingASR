@@ -69,15 +69,15 @@ public enum RecognitionMode: String, Codable, Sendable, CaseIterable {
 
 /// 推理后端（Execution Provider）。
 public enum InferenceProvider: String, Codable, Sendable, CaseIterable {
-    /// CPU（兼容性最好）
+    /// CPU（默认，变长音频上更稳）
     case cpu
-    /// CoreML / Apple Neural Engine（Apple Silicon 硬件加速，默认）
+    /// CoreML / Apple Neural Engine（Apple Silicon 硬件加速）
     case coreml
 
     public var displayName: String {
         switch self {
-        case .cpu: return "CPU"
-        case .coreml: return "神经引擎（推荐）"
+        case .cpu: return "CPU（默认）"
+        case .coreml: return "神经引擎"
         }
     }
 
@@ -174,8 +174,8 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public var segmentClustering = SegmentClusteringConfig()
     /// 语音识别模型；所选模型未安装时使用 Paraformer
     public var asrModel: AsrModelKind = .paraformer
-    /// 推理后端（CPU / 神经引擎）
-    public var inferenceProvider: InferenceProvider = .coreml
+    /// 推理后端（CPU / 神经引擎）。新安装默认 CPU。
+    public var inferenceProvider: InferenceProvider = .cpu
     /// 聚类阈值（人数未知时使用，越小分得越细）
     public var clusterThreshold: Float = 0.5
     public var minDurationOn: Float = 0.3
@@ -225,7 +225,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var meetingDetection: Bool = true
     /// 会议结束（会议软件停止通话）时自动停止录音并识别
     public var autoStopOnMeetingEnd: Bool = true
-    /// 录音期间在后台提前做说话人分离（每 2 分钟一块），停止后只需处理最后一段
+    /// 录音期间按 VAD 段提前做识别和声纹。不再跑 pyannote。
     public var liveDiarization: Bool = true
 
     public init() {}

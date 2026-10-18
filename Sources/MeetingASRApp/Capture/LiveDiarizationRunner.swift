@@ -3,8 +3,8 @@ import MeetingASRCore
 import MeetingASREngine
 import os
 
-/// 录音期间在后台低优先级队列上定期调用 LiveDiarizer：每录满一块就提前分离，
-/// 结果写入 `.raw/diarization_<track>.json`，停止后识别时直接复用。
+/// 旧的录音时 pyannote 分离。段流水线不读它的缓存，录音会话已不再启动。
+/// 保留类型，避免外部脚本或调试入口在编译期消失；新的提前识别见 `LiveRecognitionRunner`。
 final class LiveDiarizationRunner: @unchecked Sendable {
     private static let queue = DispatchQueue(label: "com.meetingasr.live-diarization", qos: .utility)
     /// 分离引擎在多次录音之间复用（只在 queue 上访问）

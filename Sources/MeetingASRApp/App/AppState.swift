@@ -43,8 +43,8 @@ final class AppState: ObservableObject {
     private var meetingSeenDuringRecording = false
     /// 检测到会议时的“是否开始录音”提示
     private let meetingPrompt = MeetingPromptPanel()
-    /// 录音期间的后台说话人分离
-    private var liveDiarization: LiveDiarizationRunner?
+    /// 录音期间按段提前识别。pyannote 实时分离不再启动。
+    private var liveRecognition: LiveRecognitionRunner?
     /// 系统强制睡眠导致的暂停，唤醒后询问是否继续
     private var pausedBySleep = false
 
@@ -216,17 +216,20 @@ final class AppState: ObservableObject {
                     self?.tapStatus = attached ? "正在采集：\(ids.joined(separator: ", "))" : "会议软件未在运行，等待中…"
                 }
                 s.onMicDeviceChange = { [weak self] name in self?.micDevice = name }
+                let kinds: [TrackKind] = [includeMic ? TrackKind.mic : nil, includeApp ? TrackKind.system : nil].compactMap { $0 }
+                let live: LiveRecognitionRunner? = settings.liveDiarization
+                    ? LiveRecognitionRunner(meeting: s.meeting, tracks: kinds, recognition: settings.recognition)
+                    : nil
+                s.onTrackSamples = { kind, samples, sessionStart in
+                    live?.accept(track: kind, samples, sessionStart: sessionStart)
+                }
                 try s.start()
                 session = s
                 micDevice = s.micDeviceName
                 if includeApp, !s.isTapAttached { tapStatus = "会议软件未在运行，等待中…" }
                 recorderState = .recording
                 meetingSeenDuringRecording = meetingWatcher.inMeeting
-                if settings.liveDiarization {
-                    // 会议软件轨做分离（双轨时麦克风轨只做 VAD）；仅麦克风时分离麦克风轨
-                    liveDiarization = LiveDiarizationRunner(meeting: s.meeting, track: includeApp ? .system : .mic,
-                                                            recognition: settings.recognition)
-                }
+                liveRecognition = live
                 sleepGuard.preventIdleSleep(true)
                 startTicker()
                 warnIfSpeakerOutput(includeMic: includeMic, includeApp: includeApp)
@@ -241,6 +244,7 @@ final class AppState: ObservableObject {
     func pause(reason: String = "user") {
         guard let session, recorderState == .recording else { return }
         session.pause(reason: reason)
+        liveRecognition?.pause()
         recorderState = .paused
         elapsed = session.elapsed
     }
@@ -248,6 +252,7 @@ final class AppState: ObservableObject {
     func resume() {
         guard let session, recorderState == .paused else { return }
         session.resume()
+        liveRecognition?.resume()
         recorderState = .recording
         pausedBySleep = false
     }
@@ -264,11 +269,11 @@ final class AppState: ObservableObject {
         micDevice = nil
         stopTicker()
         sleepGuard.preventIdleSleep(false)
-        let live = liveDiarization
-        liveDiarization = nil
+        let live = liveRecognition
+        liveRecognition = nil
         if (try? store.loadMeta(m))?.status == .pending {
             if let live {
-                // 等后台正在分离的一块完成（结果写入缓存）再开始识别
+                // 等已经闭合的段写完日志，会后处理会复用它们，只补尾段。
                 if !queued.contains(m.name) { queued.append(m.name) }
                 live.finish { [weak self] in self?.queue.enqueue(m) }
             } else {
