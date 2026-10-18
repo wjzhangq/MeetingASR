@@ -426,10 +426,18 @@ public final class MeetingProcessor {
                 labels[cluster] = "S\(labels.count + 1)"
             }
         }
-        
+
+        // 没有 cluster 的段（聚类失败时）统一分配到一个说话人
+        let hasUnclustered = allSegments.contains { !$0.isEcho && $0.cluster == nil }
+        if hasUnclustered {
+            labels["__unclustered__"] = "S\(labels.count + 1)"
+        }
+
         for i in allSegments.indices {
             if let cluster = allSegments[i].cluster {
                 allSegments[i].speaker = labels[cluster]
+            } else if !allSegments[i].isEcho {
+                allSegments[i].speaker = labels["__unclustered__"]
             }
         }
         
