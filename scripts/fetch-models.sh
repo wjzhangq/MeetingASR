@@ -51,7 +51,11 @@ for m in "${EXTRA_ASR[@]+"${EXTRA_ASR[@]}"}"; do
       fetch_tar "$R/asr-models/sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16.tar.bz2" sherpa-onnx-fire-red-asr-large-zh_en-2025-02-16 asr-firered-aed
       find "$DEST/asr-firered-aed" -mindepth 1 ! -name 'encoder.int8.onnx' ! -name 'decoder.int8.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
       ;;
-    *) echo "unknown asr model: $m (firered-ctc | firered-aed)" >&2; exit 1 ;;
+    sensevoice)
+      fetch_tar "$R/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2" sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 asr-sensevoice
+      find "$DEST/asr-sensevoice" -mindepth 1 ! -name 'model.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
+      ;;
+    *) echo "unknown asr model: $m (firered-ctc | firered-aed | sensevoice)" >&2; exit 1 ;;
   esac
 done
 
