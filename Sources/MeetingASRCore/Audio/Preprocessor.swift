@@ -119,12 +119,20 @@ public enum Preprocessor {
     }
 
     @inline(__always)
-    static func softClip(_ x: Float) -> Float {
+    public static func softClip(_ x: Float) -> Float {
         let a = abs(x)
         if a <= 0.9 { return x }
         // 0.9 以上平滑压缩到 1 以内
         let y = 0.9 + 0.1 * tanh((a - 0.9) / 0.1)
         return x < 0 ? -y : y
+    }
+
+    /// 对音频应用响度归一化（与 `process` 使用相同的目标响度）。
+    /// 用于实时处理场景，避免重复实现相同逻辑。
+    public static func normalize(_ audio: [Float], sampleRate: Int) -> [Float] {
+        let gain = loudnessGain(audio, sampleRate: sampleRate)
+        guard gain != 1 else { return audio }
+        return audio.map { softClip($0 * gain) }
     }
 }
 

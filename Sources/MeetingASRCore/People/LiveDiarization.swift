@@ -153,8 +153,6 @@ public final class LiveDiarizer {
 
     /// 按块做响度归一（与预处理相同的目标响度，识别时整轨归一的增益与之接近）。
     static func normalized(_ x: [Float]) -> [Float] {
-        let gain = Preprocessor.loudnessGain(x, sampleRate: sr)
-        guard gain != 1 else { return x }
-        return x.map { Preprocessor.softClip($0 * gain) }
+        Preprocessor.normalize(x, sampleRate: sr)
     }
 }

@@ -308,9 +308,7 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
     }
 
     private func normalized(_ audio: [Float]) -> [Float] {
-        let gain = Preprocessor.loudnessGain(audio, sampleRate: sampleRate)
-        guard gain != 1 else { return audio }
-        return audio.map { Preprocessor.softClip($0 * gain) }
+        Preprocessor.normalize(audio, sampleRate: sampleRate)
     }
 
     private func finishJob(_ job: Job, result: Segment?) {
