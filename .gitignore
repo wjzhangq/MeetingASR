@@ -7,3 +7,5 @@ dist/
 Vendor/
 Resources/models/
 .DS_Store
+.gitnexus
+.claude

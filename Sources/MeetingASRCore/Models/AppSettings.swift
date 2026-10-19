@@ -111,7 +111,7 @@ public enum AsrModelKind: String, Codable, Sendable, CaseIterable {
     public var requiredFiles: [String] {
         switch self {
         case .paraformer: return ["model.int8.onnx", "tokens.txt"]
-        case .senseVoice: return ["model.onnx", "tokens.txt"]
+        case .senseVoice: return ["model.int8.onnx", "tokens.txt"]
         }
     }
 
