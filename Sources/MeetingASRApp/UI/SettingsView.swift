@@ -125,6 +125,13 @@ private struct CaptureSettings: View {
                     ForEach(CaptureSource.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.segmented)
+
+                // 场景说明
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("• 仅麦克风：录制你的声音，适合单人演示、讲座或播客").font(.caption).foregroundStyle(.secondary)
+                    Text("• 仅会议软件：录制会议中所有人的声音，适合多人远程会议").font(.caption).foregroundStyle(.secondary)
+                    Text("• 麦克风 + 会议软件：同时录制两路音轨，可分离本地和远程声音").font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("麦克风") {
                 Picker("输入设备", selection: Binding(get: { state.settings.micDeviceUID ?? "" }, set: { state.settings.micDeviceUID = $0.isEmpty ? nil : $0; state.saveSettings() })) {

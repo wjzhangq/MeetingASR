@@ -11,9 +11,9 @@ public enum CaptureSource: String, Codable, Sendable, CaseIterable {
 
     public var displayName: String {
         switch self {
-        case .micOnly: return "仅麦克风"
-        case .appOnly: return "仅会议软件"
-        case .both: return "两者"
+        case .micOnly: return "仅麦克风（单人会议）"
+        case .appOnly: return "仅会议软件（多人会议）"
+        case .both: return "麦克风 + 会议软件"
         }
     }
 }
