@@ -177,41 +177,87 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
         trim(lane)
     }
 
+    /// 已经分配出去的最远文件时间。`coveredUntil` 要等段做完才前进，队列里的段也算已分配。
+    private func assignedUntil(_ lane: Lane) -> Double {
+        max(lane.coveredUntil, lane.ordered.map(\.end).max() ?? 0)
+    }
+
     /// 流式 VAD 若迟迟不闭合，就按最长语音段切开，避免把整场会议留在内存里。
+    /// 切点从已分配的最远点起算，并且一次把积压切完。只在末尾重放不足一段的尾巴，
+    /// 避免把剩余的几分钟整段塞回 VAD。
     private func enforceCap(_ lane: Lane) {
         let maxSec = Double(vadConfig.maxSpeechDuration)
-        // 不再要求 ordered 为空，否则一个长段在处理期间后续音频无法切分。
-        // 但切点必须从"已分配的最远点"起算：coveredUntil 只在段完成后才推进，
-        // 直接用它会和正在处理的段重叠，导致同一段音频识别两次。
-        let furthest = max(lane.coveredUntil, lane.ordered.map(\.end).max() ?? 0)
-        let uncovered = lane.totalFileSec - furthest
-        guard uncovered > maxSec + 1 else { return }
-
-        if uncovered > maxSec * 2 {
-            print("⚠️ [\(lane.kind)] 未分配音频 \(String(format: "%.1f", uncovered))秒，强制切分")
-        }
-
-        let cut = min(lane.totalFileSec, furthest + maxSec)
+        guard maxSec > 0.5 else { return }
         let rate = sampleRate
-        let audio = lane.window.slice(from: Int(furthest * Double(rate)), to: Int(cut * Double(rate)))
-        let replay = lane.window.slice(from: Int(cut * Double(rate)), to: lane.window.endIndex)
-        lane.segmenter.restart(at: cut, replay: replay)
-        if SignalStats.rms(audio) <= 0.01 {
-            // 静音：只有在没有段在排队时才能直接推进 coveredUntil，
-            // 否则 advance() 会用已完成段的 end 覆盖它。
-            if lane.ordered.isEmpty { lane.coveredUntil = cut }
-            var extra = 0
-            while let seg = lane.segmenter.nextSegment() {
-                take(seg, lane: lane)
-                extra += 1
-                if extra > 16 || lane.stalled { break }
-            }
-            return
+        var cuts = 0
+        if lane.totalFileSec - assignedUntil(lane) > maxSec * 2 {
+            print("⚠️ [\(lane.kind)] 未分配音频 \(String(format: "%.1f", lane.totalFileSec - assignedUntil(lane)))秒，强制切分")
         }
-        take(lane.segmenter.makeSegment(speechStart: furthest, speechEnd: cut), lane: lane)
+        while !lane.stalled && cuts < 256 {
+            let furthest = assignedUntil(lane)
+            let uncovered = lane.totalFileSec - furthest
+            guard uncovered > maxSec + 1 else { break }
+            let cut = min(lane.totalFileSec, furthest + maxSec)
+            guard cut > furthest + 0.05 else { break }
+            let audio = lane.window.slice(from: Int(furthest * Double(rate)), to: Int(cut * Double(rate)))
+            if audio.isEmpty { break }
+            if SignalStats.rms(audio) <= 0.01 {
+                // advance() 用 max 更新，这里往前拨不会被已完成段的 end 盖回去。
+                lane.coveredUntil = max(lane.coveredUntil, cut)
+            } else {
+                take(lane.segmenter.makeSegment(speechStart: furthest, speechEnd: cut), lane: lane)
+            }
+            cuts += 1
+            if assignedUntil(lane) <= furthest + 0.05 { break }
+        }
+        guard cuts > 0, !lane.stalled else { return }
+        let furthest = assignedUntil(lane)
+        let replay = lane.window.slice(from: Int(furthest * Double(rate)), to: lane.window.endIndex)
+        lane.segmenter.restart(at: furthest, replay: replay)
+        var extra = 0
+        while let seg = lane.segmenter.nextSegment() {
+            take(seg, lane: lane)
+            extra += 1
+            if extra > 16 || lane.stalled { break }
+        }
     }
 
     private func take(_ segment: Segment, lane: Lane) {
+        guard !lane.stalled else { return }
+        guard segment.end > segment.start else { return }
+        let maxSec = Double(vadConfig.maxSpeechDuration)
+        if segment.speechEnd - segment.speechStart > maxSec + 1e-3 {
+            for piece in splitSpeech(segment, lane: lane) {
+                takePiece(piece, lane: lane)
+                if lane.stalled { return }
+            }
+            return
+        }
+        takePiece(segment, lane: lane)
+    }
+
+    /// sherpa 可能直接交出几分钟的段。按窗口里的样本切开后再入队，避免一次 ASR 跑完整段。
+    private func splitSpeech(_ segment: Segment, lane: Lane) -> [Segment] {
+        let rate = sampleRate
+        let maxSec = Double(vadConfig.maxSpeechDuration)
+        let from = Int((segment.speechStart * Double(rate)).rounded(.down))
+        let to = Int((segment.speechEnd * Double(rate)).rounded(.up))
+        let audio = lane.window.slice(from: from, to: to)
+        let audioStart = Double(max(from, lane.window.origin)) / Double(rate)
+        let duration = Double(audio.count) / Double(rate)
+        guard duration > maxSec + 1e-3 else { return [segment] }
+        let ranges = SpeechRangeSplitter.split(
+            [0...duration], samples: audio, sampleRate: rate, maxSec: maxSec)
+        guard ranges.count > 1 else { return [segment] }
+        return ranges.map { range in
+            lane.segmenter.makeSegment(
+                speechStart: audioStart + range.lowerBound,
+                speechEnd: audioStart + range.upperBound
+            )
+        }
+    }
+
+    private func takePiece(_ segment: Segment, lane: Lane) {
         guard !lane.stalled else { return }
         guard segment.end > segment.start else { return }
         let audio = lane.window.slice(
@@ -255,8 +301,14 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
     }
 
     private func trim(_ lane: Lane) {
-        let hold = lane.ordered.map(\.start).min() ?? lane.coveredUntil
-        let keep = max(0, hold - 1)
+        // 入队时音频已经复制进 Job。窗口只留尚未分配的位置，再留一段补边和回声对齐。
+        // 系统轨还要盖住麦克风还没判定的时间，否则回声比对会切到已经丢掉的样本。
+        var hold = assignedUntil(lane)
+        if lane.kind == .system, let mic = lanes[.mic] {
+            hold = min(hold, assignedUntil(mic))
+        }
+        let margin = Double(vadConfig.maxSpeechDuration) + vadConfig.padBefore + echoLagSec + 1
+        let keep = max(0, hold - margin)
         lane.window.drop(before: Int(keep * Double(sampleRate)))
         if Double(lane.window.count) / Double(sampleRate) > retainSec {
             lane.dropped = true

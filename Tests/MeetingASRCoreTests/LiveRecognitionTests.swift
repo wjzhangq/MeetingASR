@@ -29,6 +29,45 @@ private final class ChunkVAD: StreamingVAD {
     }
 }
 
+/// 语音一直张开，直到静音或 flush 才闭合。用来逼出强制切分。
+private final class HeldSpeechVAD: StreamingVAD {
+    private var pending: [ClosedRange<Double>] = []
+    private var clock = 0.0
+    private var openStart: Double?
+    private let sampleRate: Int
+
+    init(sampleRate: Int = 16_000) { self.sampleRate = sampleRate }
+
+    func accept(_ samples: [Float]) {
+        let start = clock
+        clock += Double(samples.count) / Double(sampleRate)
+        if SignalStats.rms(samples) > 0.01 {
+            if openStart == nil { openStart = start }
+        } else if let opened = openStart {
+            pending.append(opened...clock)
+            openStart = nil
+        }
+    }
+
+    func next() -> ClosedRange<Double>? {
+        guard !pending.isEmpty else { return nil }
+        return pending.removeFirst()
+    }
+
+    func flush() {
+        if let opened = openStart, clock - opened > 0.01 {
+            pending.append(opened...clock)
+            openStart = nil
+        }
+    }
+
+    func reset() {
+        pending.removeAll()
+        clock = 0
+        openStart = nil
+    }
+}
+
 private final class FixedASR: SpeechRecognizer {
     var modelName = "mock-asr"
     var calls = 0
@@ -70,14 +109,15 @@ final class LiveRecognitionTests: XCTestCase {
         meeting: MeetingPaths,
         asr: FixedASR,
         maxQueued: Int = 2,
-        maxPending: Int = 4
+        maxPending: Int = 4,
+        vad: @escaping (TrackKind) -> StreamingVAD = { _ in ChunkVAD() }
     ) throws -> LiveSegmentCoordinator {
         try LiveSegmentCoordinator(
             meeting: meeting,
             tracks: [.mic],
             asrModel: asr.modelName,
             embeddingModel: "mock-embed",
-            makeVAD: { _ in ChunkVAD() },
+            makeVAD: vad,
             recognizer: asr,
             embedder: FixedEmbedder(),
             embeddingTracks: [.mic],
@@ -146,6 +186,57 @@ final class LiveRecognitionTests: XCTestCase {
         let logged = SegmentLog.usableSegments(meeting: meeting, track: .mic, key: key)
         XCTAssertEqual(logged.count, 1)
         XCTAssertLessThan(SegmentLog.coveredUntil(meeting: meeting, track: .mic, key: key), 1.8)
+    }
+
+    func testClosedLongSegmentIsSplitBeforeASR() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("masr-live-split-\(UUID().uuidString)")
+        let layout = StorageLayout(root: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (meeting, _) = try MeetingFactory.createRecordingMeeting(title: "长段", expectedSpeakers: nil, layout: layout)
+        let asr = FixedASR()
+        let coordinator = try makeCoordinator(meeting: meeting, asr: asr)
+        let speech = [Float](repeating: 0.2, count: 30 * 16_000)
+        coordinator.accept(track: .mic, samples: speech, sessionStart: 0)
+        coordinator.finish()
+
+        let key = SegmentLogKey(track: .mic, vadConfig: SegmentVADConfig(), asrModel: "mock-asr", embeddingModel: "mock-embed")
+        let logged = SegmentLog.usableSegments(meeting: meeting, track: .mic, key: key)
+        XCTAssertGreaterThanOrEqual(logged.count, 3)
+        XCTAssertEqual(asr.calls, logged.count)
+        XCTAssertEqual(logged.first?.speechStart ?? -1, 0, accuracy: 0.05)
+        XCTAssertEqual(logged.last?.speechEnd ?? 0, 30, accuracy: 0.05)
+        assertNoSpeechOverlap(logged, maxSpeech: 12)
+    }
+
+    func testOpenSpeechIsCappedWhileEarlierAudioIsStillBuffered() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("masr-live-cap-\(UUID().uuidString)")
+        let layout = StorageLayout(root: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (meeting, _) = try MeetingFactory.createRecordingMeeting(title: "张开", expectedSpeakers: nil, layout: layout)
+        let asr = FixedASR()
+        let coordinator = try makeCoordinator(meeting: meeting, asr: asr, vad: { _ in HeldSpeechVAD() })
+        // 超过窗口上限（最长语音段 + 36 秒）仍应继续切，而不是把这条轨停掉。
+        coordinator.accept(track: .mic, samples: [Float](repeating: 0.2, count: 50 * 16_000), sessionStart: 0)
+        coordinator.accept(track: .mic, samples: [Float](repeating: 0.2, count: 10 * 16_000), sessionStart: 50)
+        coordinator.finish()
+
+        let key = SegmentLogKey(track: .mic, vadConfig: SegmentVADConfig(), asrModel: "mock-asr", embeddingModel: "mock-embed")
+        let logged = SegmentLog.usableSegments(meeting: meeting, track: .mic, key: key)
+        XCTAssertGreaterThanOrEqual(logged.count, 4)
+        XCTAssertEqual(asr.calls, logged.count)
+        XCTAssertGreaterThan(logged.last?.speechEnd ?? 0, 55)
+        XCTAssertEqual(SegmentLog.coveredUntil(meeting: meeting, track: .mic, key: key), 60, accuracy: 0.05)
+        assertNoSpeechOverlap(logged, maxSpeech: 12)
+    }
+
+    private func assertNoSpeechOverlap(_ segments: [Segment], maxSpeech: Double) {
+        for segment in segments {
+            XCTAssertLessThanOrEqual(segment.speechDuration, maxSpeech + 0.05)
+        }
+        for pair in zip(segments, segments.dropFirst()) {
+            XCTAssertLessThanOrEqual(pair.0.speechEnd, pair.1.speechStart + 0.05)
+            XCTAssertLessThanOrEqual(pair.0.end, pair.1.start + 0.3)
+        }
     }
 }
 
