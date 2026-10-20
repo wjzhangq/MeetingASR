@@ -30,7 +30,7 @@ public final class SherpaRecognizer: SpeechRecognizer {
             model = sherpaOnnxOfflineModelConfig(
                 tokens: tokens, numThreads: numThreads, provider: provider,
                 senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(
-                    model: dir.appendingPathComponent("model.onnx").path,
+                    model: dir.appendingPathComponent("model.int8.onnx").path,
                     language: "",
                     useInverseTextNormalization: true))
         }
