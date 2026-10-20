@@ -124,13 +124,20 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
 
     /// 停止录音后调用。会等已经入队的段做完，再把覆盖进度写盘。
     public func finish() {
+        let start = Date()
         idle.lock()
         lock.lock()
         for lane in lanes.values where !lane.stalled {
             lane.segmenter.flush()
             collect(lane)
         }
+        let pendingCount = waiting.count + overflow.count + (running > 0 ? 1 : 0)
         lock.unlock()
+
+        if pendingCount > 0 {
+            print("LiveSegmentCoordinator.finish: 等待 \(pendingCount) 个段完成...")
+        }
+
         while true {
             lock.lock()
             let idleNow = running == 0 && waiting.isEmpty && overflow.isEmpty
@@ -138,6 +145,12 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
             if idleNow { break }
             idle.wait()
         }
+
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed > 5 {
+            print("⚠️ LiveSegmentCoordinator.finish 耗时 \(String(format: "%.1f", elapsed))秒")
+        }
+
         lock.lock()
         for lane in lanes.values {
             if !lane.dropped && !lane.stalled {
@@ -167,15 +180,26 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
     /// 流式 VAD 若迟迟不闭合，就按最长语音段切开，避免把整场会议留在内存里。
     private func enforceCap(_ lane: Lane) {
         let maxSec = Double(vadConfig.maxSpeechDuration)
-        guard lane.ordered.isEmpty else { return }
-        guard lane.totalFileSec - lane.coveredUntil > maxSec + 1 else { return }
-        let cut = min(lane.totalFileSec, lane.coveredUntil + maxSec)
+        // 不再要求 ordered 为空，否则一个长段在处理期间后续音频无法切分。
+        // 但切点必须从"已分配的最远点"起算：coveredUntil 只在段完成后才推进，
+        // 直接用它会和正在处理的段重叠，导致同一段音频识别两次。
+        let furthest = max(lane.coveredUntil, lane.ordered.map(\.end).max() ?? 0)
+        let uncovered = lane.totalFileSec - furthest
+        guard uncovered > maxSec + 1 else { return }
+
+        if uncovered > maxSec * 2 {
+            print("⚠️ [\(lane.kind)] 未分配音频 \(String(format: "%.1f", uncovered))秒，强制切分")
+        }
+
+        let cut = min(lane.totalFileSec, furthest + maxSec)
         let rate = sampleRate
-        let audio = lane.window.slice(from: Int(lane.coveredUntil * Double(rate)), to: Int(cut * Double(rate)))
+        let audio = lane.window.slice(from: Int(furthest * Double(rate)), to: Int(cut * Double(rate)))
         let replay = lane.window.slice(from: Int(cut * Double(rate)), to: lane.window.endIndex)
         lane.segmenter.restart(at: cut, replay: replay)
         if SignalStats.rms(audio) <= 0.01 {
-            lane.coveredUntil = cut
+            // 静音：只有在没有段在排队时才能直接推进 coveredUntil，
+            // 否则 advance() 会用已完成段的 end 覆盖它。
+            if lane.ordered.isEmpty { lane.coveredUntil = cut }
             var extra = 0
             while let seg = lane.segmenter.nextSegment() {
                 take(seg, lane: lane)
@@ -184,7 +208,7 @@ public final class LiveSegmentCoordinator: @unchecked Sendable {
             }
             return
         }
-        take(lane.segmenter.makeSegment(speechStart: lane.coveredUntil, speechEnd: cut), lane: lane)
+        take(lane.segmenter.makeSegment(speechStart: furthest, speechEnd: cut), lane: lane)
     }
 
     private func take(_ segment: Segment, lane: Lane) {

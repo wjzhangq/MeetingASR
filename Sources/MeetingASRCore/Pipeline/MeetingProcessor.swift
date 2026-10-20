@@ -323,13 +323,14 @@ public final class MeetingProcessor {
     }
 
     // MARK: - Segment Stream Mode
-    
+
     private func runSegmentStream(
         _ meeting: MeetingPaths,
         meta: MeetingMeta,
         cancel: CancellationFlag,
         progress: @escaping (ProcessingProgress) -> Void
     ) throws -> Transcript {
+        let overallStart = Date()
         let rec = options.recognition
         
         // 1. 预处理
@@ -339,11 +340,12 @@ public final class MeetingProcessor {
         let duration = tracks.map { $0.offset + $0.reader.durationSec }.max() ?? 0
         
         // 2. VAD 分段 + 并行 ASR/声纹
+        let vadStart = Date()
         progress(.at(.diarization, 0))
         var allSegments: [Segment] = []
         var samplesByTrack: [TrackKind: [Float]] = [:]
         let twoTrack = tracks.contains { $0.kind == .mic } && tracks.contains { $0.kind == .system }
-        
+
         for (ti, track) in tracks.enumerated() {
             try cancel.check()
             let samples = track.reader.readAllMono()
@@ -360,22 +362,33 @@ public final class MeetingProcessor {
                 segments = SegmentLog.usableSegments(meeting: meeting, track: track.kind, key: key).map {
                     shifted($0, by: track.offset)
                 }
+                if !segments.isEmpty {
+                    print("[\(track.kind)] 复用录音期间已识别的 \(segments.count) 个段（覆盖到 \(String(format: "%.1f", cover))秒）")
+                }
             }
             let tailAt = cover > 0.05 ? min(trackDur, cover) : 0
             if trackDur - tailAt > 0.2 {
+                let tailStart = Date()
                 let from = Int((tailAt * Double(Self.sr)).rounded(.down))
                 if from < samples.count {
                     let tail = Array(samples[from...])
-                    segments.append(contentsOf: try transcribe(
+                    let tailSegs = try transcribe(
                         tail, sampleOrigin: tailAt, track: track.kind, offset: track.offset,
-                        extractEmbeddings: embed, cancel: cancel))
+                        extractEmbeddings: embed, cancel: cancel)
+                    let tailElapsed = Date().timeIntervalSince(tailStart)
+                    let tailDur = Double(tail.count) / Double(Self.sr)
+                    print("[\(track.kind)] 补充识别尾段 \(String(format: "%.1f", tailDur))秒，耗时 \(String(format: "%.1f", tailElapsed))秒（RTF=\(String(format: "%.2f", tailElapsed / max(0.1, tailDur)))）")
+                    segments.append(contentsOf: tailSegs)
                 }
             }
             for i in segments.indices { segments[i].id = i }
             allSegments.append(contentsOf: segments)
             progress(.at(.diarization, (Double(ti) + 0.8) / Double(tracks.count)))
         }
-        
+
+        let vadElapsed = Date().timeIntervalSince(vadStart)
+        print("VAD + ASR/声纹 总耗时 \(String(format: "%.1f", vadElapsed))秒")
+
         // 3. 聚类
         progress(.at(.recognition, 0))
         let clusterer = SegmentClusterer(config: rec.segmentClustering)
@@ -547,8 +560,12 @@ public final class MeetingProcessor {
                 throw ProcessingError.verificationFailed
             }
         }
-        
+
         progress(.at(.output, 1))
+
+        let overallElapsed = Date().timeIntervalSince(overallStart)
+        print("✓ 会议处理完成，总耗时 \(String(format: "%.1f", overallElapsed))秒（会议时长 \(String(format: "%.1f", duration))秒，RTF=\(String(format: "%.2f", overallElapsed / max(1, duration)))）")
+
         return transcript
     }
 

@@ -9,6 +9,7 @@ public struct SegmentVADConfig: Codable, Sendable, Equatable {
     /// 过滤咳嗽、敲键盘等噪声
     public var minSpeechDuration: Float = 0.25
     /// 超长段强制切开，限制单段混入多人的概率
+    /// 注意：sherpa-onnx VAD 的此参数可能失效，实测可输出数百秒的段
     public var maxSpeechDuration: Float = 12
     /// 前补边：VAD 边界常切掉首字起音
     public var padBefore: Double = 0.15
