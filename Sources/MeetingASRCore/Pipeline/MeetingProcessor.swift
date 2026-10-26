@@ -48,6 +48,18 @@ public final class MeetingProcessor {
 
     private static let sr = Preprocessor.targetRate
 
+    /// 当前运行所使用的取消标志（由 process 设置，结束时清空）
+    private var activeCancel: CancellationFlag?
+    private let activeCancelLock = NSLock()
+
+    /// 取消当前正在进行的处理任务。没有任务在运行时无副作用。
+    public func cancel() {
+        activeCancelLock.lock()
+        let flag = activeCancel
+        activeCancelLock.unlock()
+        flag?.cancel()
+    }
+
     /// 分离各阶段耗时（按本机实测持续校准，用于无回调阶段的进度估计）
     struct DiarizationTiming {
         /// 切分阶段：每秒音频耗时（秒）
@@ -83,6 +95,16 @@ public final class MeetingProcessor {
     /// 处理一个会议。失败或取消时更新 meta 状态并保留原始音频，然后重新抛出错误。
     @discardableResult
     public func process(_ meeting: MeetingPaths, cancel: CancellationFlag = CancellationFlag(), progress: @escaping (ProcessingProgress) -> Void = { _ in }) throws -> Transcript {
+        // 记录本次运行的取消标志，使 cancel() 能取消调用方传入的那一个
+        activeCancelLock.lock()
+        activeCancel = cancel
+        activeCancelLock.unlock()
+        defer {
+            activeCancelLock.lock()
+            if activeCancel === cancel { activeCancel = nil }
+            activeCancelLock.unlock()
+        }
+
         var meta = try store.loadMeta(meeting)
         if options.persistResults {
             meta.status = .processing

@@ -4,6 +4,62 @@ import MeetingASREngine
 
 // meetingasr-cli：无界面执行完整识别流程，用于 M0 评估、批量处理与验证。
 
+// MARK: - 优雅退出处理
+
+/// 退出状态与当前处理器的共享引用。信号在 DispatchSource 上处理（而非信号上下文中），
+/// 因此这里可以安全地加锁与写 stderr。
+private let shutdownLock = NSLock()
+private var shuttingDown = false
+private var currentProcessor: MeetingProcessor?
+
+private var isShuttingDown: Bool {
+    shutdownLock.lock(); defer { shutdownLock.unlock() }
+    return shuttingDown
+}
+
+private func setCurrentProcessor(_ p: MeetingProcessor?) {
+    shutdownLock.lock(); currentProcessor = p; shutdownLock.unlock()
+}
+
+/// 标记开始退出。`first` 表示这是第一次收到退出请求，`processor` 为当前正在运行的处理器。
+private func beginShutdown() -> (first: Bool, processor: MeetingProcessor?) {
+    shutdownLock.lock(); defer { shutdownLock.unlock() }
+    let first = !shuttingDown
+    shuttingDown = true
+    return (first, currentProcessor)
+}
+
+private var signalSources: [DispatchSourceSignal] = []
+
+private func setupSignalHandlers() {
+    let queue = DispatchQueue(label: "cli.signals")
+
+    func install(_ sig: Int32, handler: @escaping () -> Void) {
+        signal(sig, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: sig, queue: queue)
+        src.setEventHandler(handler: handler)
+        src.resume()
+        signalSources.append(src)
+    }
+
+    install(SIGINT) {
+        let (first, proc) = beginShutdown()
+        guard first else {
+            FileHandle.standardError.write(Data("\n强制退出\n".utf8))
+            exit(130)
+        }
+        FileHandle.standardError.write(Data("\n\n正在退出，请稍候...\n".utf8))
+        proc?.cancel()
+    }
+
+    install(SIGTERM) {
+        let (_, proc) = beginShutdown()
+        FileHandle.standardError.write(Data("\n收到终止信号，正在退出...\n".utf8))
+        proc?.cancel()
+        exit(143)
+    }
+}
+
 let usage = """
 用法：
   meetingasr-cli recognize <音频文件> [--from 秒] [--to 秒] [--speakers N] [--keep-work]
@@ -33,6 +89,9 @@ let usage = """
   --mixed-valley X          混合段检测低谷（默认 0.3）
   --smooth-run-sec X        混合段标签平滑长度（秒，默认 1.5）
 """
+
+// 设置信号处理器
+setupSignalHandlers()
 
 var args = Array(CommandLine.arguments.dropFirst())
 
@@ -121,11 +180,19 @@ func makeProcessor() -> MeetingProcessor {
 
 func run(_ m: MeetingPaths) {
     let proc = makeProcessor()
+    setCurrentProcessor(proc)  // 保存引用以便信号处理器可以取消
+    defer { setCurrentProcessor(nil) }
+
     let t0 = Date()
     var lastLine = ""
     var stageStart = (ProcessingStage.preprocess, t0)
     do {
         let t = try proc.process(m) { p in
+            // 退出中不再刷新进度行，实际取消由 proc.cancel() 触发
+            if isShuttingDown {
+                return
+            }
+
             if p.stage != stageStart.0 {
                 FileHandle.standardError.write(Data(String(format: "\r%@ 用时 %.1fs        \n", stageStart.0.displayName, Date().timeIntervalSince(stageStart.1)).utf8))
                 stageStart = (p.stage, Date())
@@ -141,6 +208,10 @@ func run(_ m: MeetingPaths) {
                                                    t.durationSec, elapsed, elapsed / max(1, t.durationSec), t.speakers.count, t.segments.count, m.dir.path).utf8))
         print(TranscriptWriter.markdown(t))
     } catch {
+        if isShuttingDown {
+            FileHandle.standardError.write(Data("\n已取消，中间结果可能已保存\n".utf8))
+            exit(130)
+        }
         fail("\n识别失败：\(error)")
     }
 }
