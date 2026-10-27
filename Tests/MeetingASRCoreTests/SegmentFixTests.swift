@@ -67,6 +67,23 @@ final class SegmentFixTests: XCTestCase {
         XCTAssertEqual(Set(clusterer.cluster(segs, targetCount: 9).compactMap(\.cluster)).count, 3)
     }
 
+    /// 混合段的子窗口标签全部相同时，游程只有 1 段，
+    /// smoothLabels 里的 1..<(runs.count - 1) 会退化成非法区间而崩溃。
+    func testSmoothLabelsDoesNotCrashOnSingleRun() {
+        let e = VectorMath.normalized([Float]([1, 0, 0, 0]))
+        var seg = Segment(id: 0, track: .file, start: 0, end: 6, speechStart: 0, speechEnd: 6)
+        seg.embedding = e
+        seg.isMixed = true
+        // 三个子窗口，声纹一致 → 平滑前只有一个游程
+        seg.subwindows = (0..<3).map { i in
+            SubwindowEmbedding(start: Double(i) * 2, end: Double(i) * 2 + 2, embedding: e)
+        }
+        var anchorSeg = Segment(id: 1, track: .file, start: 10, end: 20, speechStart: 10, speechEnd: 20)
+        anchorSeg.embedding = e
+        let out = SegmentAssigner(config: SegmentClusteringConfig()).splitMixedSegments([anchorSeg, seg])
+        XCTAssertFalse(out.isEmpty)
+    }
+
     func testThreeWaySplitDoesNotDuplicateTokens() {
         let e0 = VectorMath.normalized([Float]([1, 0, 0, 0]))
         let e1 = VectorMath.normalized([Float]([0, 1, 0, 0]))

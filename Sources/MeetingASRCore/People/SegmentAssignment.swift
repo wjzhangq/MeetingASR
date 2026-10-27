@@ -110,8 +110,10 @@ public struct SegmentAssigner: Sendable {
             runs.append((label: label, range: i..<j))
             i = j
         }
-        
-        // 合并短游程
+
+        // 合并短游程。需要「前—中—后」三段才有中间段可并，
+        // 少于 3 段时 1..<(runs.count - 1) 会变成非法区间（如 1..<0）而崩溃。
+        guard runs.count >= 3 else { return result }
         for k in 1..<(runs.count - 1) {
             let run = runs[k]
             let duration = subwindows[run.range.upperBound - 1].end - subwindows[run.range.lowerBound].start
