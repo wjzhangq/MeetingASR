@@ -31,6 +31,42 @@ final class SegmentFixTests: XCTestCase {
         XCTAssertNotEqual(out[0].cluster, out[2].cluster)
     }
 
+    /// 指定人数时，声纹上本该分开的两组也要强制合并到目标数。
+    func testTargetCountForcesMergeBelowThreshold() {
+        var config = SegmentClusteringConfig()
+        config.mergeSimilarity = 0.9   // 高到不会自发合并
+        config.minClusterSec = 0       // 关掉小簇吸收，隔离强制合并这一步
+        config.shortSegmentSec = 1
+        let clusterer = SegmentClusterer(config: config)
+
+        func seg(_ id: Int, _ v: [Float]) -> Segment {
+            var s = Segment(
+                id: id, track: .file,
+                start: Double(id) * 12, end: Double(id) * 12 + 10,
+                speechStart: Double(id) * 12, speechEnd: Double(id) * 12 + 10
+            )
+            s.embedding = v
+            return s
+        }
+
+        let a = VectorMath.normalized([Float]([1, 0, 0, 0, 0, 0, 0, 0]))
+        let b = VectorMath.normalized([Float]([0, 0, 0, 1, 0, 0, 0, 0]))
+        let c = VectorMath.normalized([Float]([0, 0, 0, 0, 0, 0, 1, 0]))
+        let segs = [seg(0, a), seg(1, b), seg(2, c)]
+
+        // 不指定人数：三个互相正交的簇各自独立
+        XCTAssertEqual(Set(clusterer.cluster(segs).compactMap(\.cluster)).count, 3)
+
+        // 指定 2 人：强制并到 2
+        XCTAssertEqual(Set(clusterer.cluster(segs, targetCount: 2).compactMap(\.cluster)).count, 2)
+
+        // 指定 1 人：全部并成一个
+        XCTAssertEqual(Set(clusterer.cluster(segs, targetCount: 1).compactMap(\.cluster)).count, 1)
+
+        // 目标数大于实际簇数时不生效
+        XCTAssertEqual(Set(clusterer.cluster(segs, targetCount: 9).compactMap(\.cluster)).count, 3)
+    }
+
     func testThreeWaySplitDoesNotDuplicateTokens() {
         let e0 = VectorMath.normalized([Float]([1, 0, 0, 0]))
         let e1 = VectorMath.normalized([Float]([0, 1, 0, 0]))

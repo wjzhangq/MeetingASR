@@ -23,13 +23,13 @@ public struct ModelPaths: Sendable {
 
     public var asrModel: URL { root.appendingPathComponent("asr/model.int8.onnx") }
     public var asrTokens: URL { root.appendingPathComponent("asr/tokens.txt") }
-    public var segmentation: URL { root.appendingPathComponent("segmentation/model.onnx") }
     public var embedding: URL { root.appendingPathComponent("embedding/campplus.onnx") }
     public var punctuation: URL { root.appendingPathComponent("punct/model.onnx") }
     public var vad: URL { root.appendingPathComponent("vad/silero_vad.onnx") }
 
     /// 必需的模型文件（标点为可选）。
-    public var required: [URL] { [asrModel, asrTokens, segmentation, embedding, vad] }
+    /// 段流水线不用 pyannote，所以 segmentation 模型不在必需之列。
+    public var required: [URL] { [asrModel, asrTokens, embedding, vad] }
 
     public func validate() throws {
         for url in required where !FileManager.default.fileExists(atPath: url.path) {
