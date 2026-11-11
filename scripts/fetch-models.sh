@@ -45,7 +45,8 @@ for m in "${EXTRA_ASR[@]+"${EXTRA_ASR[@]}"}"; do
   case "$m" in
     sensevoice)
       fetch_tar "$R/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2" sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 asr-sensevoice
-      find "$DEST/asr-sensevoice" -mindepth 1 ! -name 'model.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
+      # 保留文件名必须与 AsrModelKind.senseVoice.requiredFiles 一致，否则 hasASR() 判定失败、静默回退 Paraformer
+      find "$DEST/asr-sensevoice" -mindepth 1 ! -name 'model.int8.onnx' ! -name 'tokens.txt' -exec rm -rf {} +
       ;;
     *) echo "unknown asr model: $m (sensevoice)" >&2; exit 1 ;;
   esac

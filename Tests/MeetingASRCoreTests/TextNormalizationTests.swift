@@ -107,7 +107,7 @@ final class EstimatedTokensTests: XCTestCase {
         XCTAssertEqual(AsrModelKind.senseVoice.releaseURL.lastPathComponent, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2")
         XCTAssertEqual(AsrModelKind.senseVoice.directory, "asr-sensevoice")
         XCTAssertEqual(AsrModelKind.senseVoice.modelName, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue")
-        XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("model.onnx"))
+        XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("model.int8.onnx"))
         XCTAssertTrue(AsrModelKind.senseVoice.requiredFiles.contains("tokens.txt"))
     }
 }

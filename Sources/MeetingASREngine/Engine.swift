@@ -77,80 +77,6 @@ public final class SherpaPunctuator: Punctuator {
     }
 }
 
-/// pyannote segmentation 3.0 + CAM++ + 快速聚类。
-public final class SherpaDiarizer: SpeakerDiarizer {
-    private let paths: ModelPaths
-    private let numThreads: Int
-    private let provider: String
-    private var sd: SherpaOnnxOfflineSpeakerDiarizationWrapper?
-    private var builtFor: DiarizationOptions?
-
-    public init(paths: ModelPaths, numThreads: Int, provider: String = "cpu") throws {
-        for u in [paths.segmentation, paths.embedding] where !FileManager.default.fileExists(atPath: u.path) {
-            throw EngineError.modelMissing(u.path)
-        }
-        self.paths = paths
-        self.numThreads = numThreads
-        self.provider = provider
-        _ = try build(DiarizationOptions())
-    }
-
-    private func makeConfig(_ o: DiarizationOptions) -> SherpaOnnxOfflineSpeakerDiarizationConfig {
-        let seg = sherpaOnnxOfflineSpeakerSegmentationModelConfig(
-            pyannote: sherpaOnnxOfflineSpeakerSegmentationPyannoteModelConfig(model: paths.segmentation.path),
-            numThreads: numThreads, provider: provider)
-        let emb = sherpaOnnxSpeakerEmbeddingExtractorConfig(model: paths.embedding.path, numThreads: numThreads, provider: provider)
-        let cluster = sherpaOnnxFastClusteringConfig(numClusters: o.numSpeakers.map { max(1, $0) } ?? -1, threshold: o.threshold)
-        return sherpaOnnxOfflineSpeakerDiarizationConfig(segmentation: seg, embedding: emb, clustering: cluster,
-                                                         minDurationOn: o.minDurationOn, minDurationOff: o.minDurationOff)
-    }
-
-    private func build(_ o: DiarizationOptions) throws -> SherpaOnnxOfflineSpeakerDiarizationWrapper {
-        if let sd, let b = builtFor, b.minDurationOn == o.minDurationOn, b.minDurationOff == o.minDurationOff {
-            if b != o {
-                // 只有聚类参数变化时可直接更新
-                var config = makeConfig(o)
-                sd.setConfig(config: &config)
-                builtFor = o
-            }
-            return sd
-        }
-        var config = makeConfig(o)
-        let w = SherpaOnnxOfflineSpeakerDiarizationWrapper(config: &config)
-        guard w.impl != nil else { throw EngineError.initFailed("speaker diarization") }
-        sd = w
-        builtFor = o
-        return w
-    }
-
-    public func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan] {
-        guard samples.count > 16_000 / 2, let sd = try? build(options) else { return [] }
-        let box = ProgressBox(progress)
-        let opaque = Unmanaged.passRetained(box).toOpaque()
-        defer { Unmanaged<ProgressBox>.fromOpaque(opaque).release() }
-        let result = SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
-            sd.impl, samples, Int32(samples.count),
-            { processed, total, arg in
-                guard let arg else { return 0 }
-                let box = Unmanaged<ProgressBox>.fromOpaque(arg).takeUnretainedValue()
-                // 当前 sherpa-onnx 忽略返回值，无法中途中止；取消在分离结束后由流水线检查
-                _ = box.callback(total > 0 ? Double(processed) / Double(total) : 0)
-                return 0
-            }, opaque)
-        guard let result else { return [] }
-        defer { SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result) }
-        let n = Int(SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result))
-        guard n > 0, let p = SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result) else { return [] }
-        defer { SherpaOnnxOfflineSpeakerDiarizationDestroySegment(p) }
-        return (0..<n).map { RawSpan(speaker: "\(p[$0].speaker)", start: Double(p[$0].start), end: Double(p[$0].end)) }
-    }
-
-    private final class ProgressBox {
-        let callback: (Double) -> Bool
-        init(_ c: @escaping (Double) -> Bool) { callback = c }
-    }
-}
-
 /// CAM++ 声纹提取。
 public final class SherpaEmbedder: SpeakerEmbedder {
     public let modelName = EmbeddingModel.current
@@ -235,27 +161,27 @@ public final class SherpaVAD: VoiceActivityDetector {
     }
 }
 
-/// 说话人分离策略。
-public enum DiarizationStrategy {
-    /// pyannote 切分 + 声纹 + 聚类（默认，精度高，支持重叠语音）
-    case pyannote
-    /// VAD + 固定窗口 + 两阶段聚类（快速，低内存，会议场景推荐）
-    case fast
-}
-
 /// 创建全套引擎。
 public enum SherpaEngineFactory {
     /// - Parameter asrModel: 所选识别模型；未安装时使用 Paraformer
     /// - Parameter provider: 推理后端，"cpu" 或 "coreml"（神经引擎）
-    /// - Parameter diarizationStrategy: 说话人分离策略
-    /// - Parameter loadDiarizer: 段流水线不调用分离模型。实时分离会自己建 `SherpaDiarizer`。
     public static func make(paths: ModelPaths, numThreads: Int = 4, asrModel: AsrModelKind = .paraformer,
-                           provider: String = "cpu", diarizationStrategy: DiarizationStrategy = .pyannote,
-                           vadConfig: SegmentVADConfig = SegmentVADConfig(),
-                           loadDiarizer: Bool = true) throws -> EngineSet {
+                           provider: String = "cpu",
+                           vadConfig: SegmentVADConfig = SegmentVADConfig()) throws -> EngineSet {
         try paths.validate()
         let punct = SherpaPunctuator(paths: paths, numThreads: numThreads)
-        let kind = paths.hasASR(asrModel) ? asrModel : .paraformer
+        // 选中的模型没装就回退。出声警告：静默回退会让「我选了 SenseVoice 却还是 Paraformer」查不出原因。
+        let kind: AsrModelKind
+        if paths.hasASR(asrModel) {
+            kind = asrModel
+        } else {
+            kind = .paraformer
+            if asrModel != .paraformer {
+                let dir = paths.root.appendingPathComponent(asrModel.directory).path
+                FileHandle.standardError.write(Data(
+                    "⚠️ \(asrModel.displayName) 未安装（缺 \(asrModel.requiredFiles.joined(separator: " / ")) 于 \(dir)），改用 Paraformer\n".utf8))
+            }
+        }
         // ASR 与声纹并行，线程对半分，避免两套会话各占满全部核心。
         let asrThreads = max(1, (numThreads + 1) / 2)
         let embedThreads = max(1, numThreads / 2)
@@ -263,25 +189,12 @@ public enum SherpaEngineFactory {
         let embedder = try SherpaEmbedder(paths: paths, numThreads: embedThreads, provider: provider)
         let vad = try SherpaVAD(paths: paths, config: vadConfig)
 
-        let diarizer: SpeakerDiarizer
-        if !loadDiarizer {
-            diarizer = IdleDiarizer()
-        } else {
-            switch diarizationStrategy {
-            case .pyannote:
-                diarizer = try SherpaDiarizer(paths: paths, numThreads: numThreads, provider: provider)
-            case .fast:
-                diarizer = SherpaFastDiarizer(vad: vad, embedder: embedder)
-            }
-        }
-
         var models = ModelVersions.bundled
         models.asr = recognizer.modelName
         if punct == nil { models.punctuation = nil }
         return EngineSet(
             recognizer: recognizer,
             punctuator: punct,
-            diarizer: diarizer,
             embedder: embedder,
             vad: vad,
             models: models
@@ -292,13 +205,6 @@ public enum SherpaEngineFactory {
 }
 
 /// 段流水线不使用 pyannote。保留协议实现，避免引擎集合出现空槽。
-private final class IdleDiarizer: SpeakerDiarizer {
-    func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan] {
-        _ = progress(1)
-        return []
-    }
-}
-
 /// 流式 Silero VAD（复用实例，支持增量送帧）。
 public final class SherpaStreamingVAD: StreamingVAD {
     private let vad: SherpaOnnxVoiceActivityDetectorWrapper

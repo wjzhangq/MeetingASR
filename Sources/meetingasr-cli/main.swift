@@ -63,7 +63,8 @@ private func setupSignalHandlers() {
 let usage = """
 用法：
   meetingasr-cli recognize <音频文件> [--from 秒] [--to 秒] [--speakers N] [--keep-work]
-  meetingasr-cli process <会议目录名>            重新识别未完成的会议
+  meetingasr-cli process <会议目录名> [--speakers N] [--dry-run]
+                                                重新识别未完成的会议
   meetingasr-cli sweep <会议目录列表文件>         参数扫描（M0 评估）
   meetingasr-cli list                           最近会议
   meetingasr-cli show <会议目录名>               打印 Markdown 逐字稿
@@ -79,6 +80,8 @@ let usage = """
   --threshold X     聚类阈值（默认 0.5）
   --match X         声纹匹配阈值（默认 0.6）
   --asr-model M     识别模型：paraformer（默认）| sensevoice
+  --speakers N      预计说话人数，强制合并到该数（写入会议 meta；0 或省略为自动判定）
+  --dry-run         只跑一遍看说话人数，不写逐字稿、不改会议状态、不删原始音频
 
 段流水线参数：
   --vad-min-silence X       VAD 最小静音时长（秒，默认 0.4）
@@ -122,6 +125,7 @@ let from = option("--from").flatMap(Double.init)
 let to = option("--to").flatMap(Double.init)
 let speakers = option("--speakers").flatMap(Int.init)
 let keepWork = flag("--keep-work")
+let dryRun = flag("--dry-run")
 let asrModel: AsrModelKind? = option("--asr-model").map { name in
     guard let k = AsrModelKind(cliName: name) else { fail("未知的识别模型：\(name)") }
     return k
@@ -166,14 +170,16 @@ func makeProcessor() -> MeetingProcessor {
     }
     let t0 = Date()
     let engines: EngineSet
-    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString, vadConfig: settings.recognition.segmentVAD, loadDiarizer: false) } catch { fail("\(error)") }
+    do { engines = try SherpaEngineFactory.make(paths: paths, numThreads: threads, asrModel: kind, provider: settings.recognition.inferenceProvider.providerString, vadConfig: settings.recognition.segmentVAD) } catch { fail("\(error)") }
     FileHandle.standardError.write(Data(String(format: "模型加载 %.1fs（%@，sherpa-onnx %@）\n", Date().timeIntervalSince(t0), engines.recognizer.modelName, SherpaEngineFactory.version).utf8))
     settings.recognition.numThreads = threads
     if let threshold { settings.recognition.clusterThreshold = threshold }
     if let match { settings.recognition.matchThreshold = match }
 
     var opts = ProcessingOptions(recognition: settings.recognition, hotwords: HotwordList.load())
-    opts.deleteRawOnSuccess = !keepWork
+    opts.deleteRawOnSuccess = !keepWork && !dryRun
+    // 试跑：不写逐字稿、不改会议状态、不写人物库，也不删原始音频
+    if dryRun { opts.persistResults = false }
     people.maxSamplesPerPerson = settings.recognition.maxSamplesPerPerson
     return MeetingProcessor(engines: engines, store: store, people: people, options: opts)
 }
@@ -206,7 +212,13 @@ func run(_ m: MeetingPaths) {
         let elapsed = Date().timeIntervalSince(t0)
         FileHandle.standardError.write(Data(String(format: "\n完成：音频 %.1fs，耗时 %.1fs（RTF %.3f），%d 位说话人，%d 段\n结果目录：%@\n",
                                                    t.durationSec, elapsed, elapsed / max(1, t.durationSec), t.speakers.count, t.segments.count, m.dir.path).utf8))
-        print(TranscriptWriter.markdown(t))
+        if dryRun {
+            FileHandle.standardError.write(Data("试跑：未写入逐字稿，原始音频保留\n".utf8))
+            print("说话人数 \(t.speakers.count)，段数 \(t.segments.count)")
+            print(t.speakers.map(\.id).joined(separator: " "))
+        } else {
+            print(TranscriptWriter.markdown(t))
+        }
     } catch {
         if isShuttingDown {
             FileHandle.standardError.write(Data("\n已取消，中间结果可能已保存\n".utf8))
@@ -236,7 +248,13 @@ case "recognize":
     }
 
 case "process":
-    run(meeting(args.first))
+    let m = meeting(args.first)
+    // 写进 meta 再处理，走的是和 app 完全相同的读取路径（MeetingProcessor 只认 meta.expectedSpeakers）
+    if let speakers {
+        do { _ = try store.updateMeta(m) { $0.expectedSpeakers = speakers > 0 ? speakers : nil } }
+        catch { fail("无法写入预计人数：\(error)") }
+    }
+    run(m)
 
 case "sweep":
     guard let listFile = args.first else { fail("用法：meetingasr-cli sweep <会议列表文件>\n文件格式：每行一个会议目录名，# 开头为注释") }
@@ -263,14 +281,15 @@ case "sweep":
     baseSettings.recognition.recognitionMode = .segmentStream
     baseSettings.recognition.numThreads = threads
     if let match { baseSettings.recognition.matchThreshold = match }
+    // 作为默认人数生效，不改各会议的 meta；会议自己填了人数仍以 meta 为准
+    if let speakers, speakers > 0 { baseSettings.recognition.defaultSpeakerCount = speakers }
 
     let sweepEngines: EngineSet
     do {
         sweepEngines = try SherpaEngineFactory.make(
             paths: sweepPaths, numThreads: threads,
             asrModel: baseSettings.recognition.asrModel,
-            provider: baseSettings.recognition.inferenceProvider.providerString,
-            loadDiarizer: false)
+            provider: baseSettings.recognition.inferenceProvider.providerString)
     } catch { fail("\(error)") }
 
     let gridSize = vadMinSilenceGrid.count * mergeSimilarityGrid.count * minClusterSecGrid.count

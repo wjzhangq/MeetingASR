@@ -191,13 +191,6 @@ public struct RecognitionSettings: Codable, Sendable, Equatable {
     public static var defaultThreads: Int { min(8, max(2, ProcessInfo.processInfo.activeProcessorCount)) }
 
     public init() {}
-
-    public var clusterMerge: ClusterMergeConfig {
-        var c = ClusterMergeConfig()
-        c.similarity = clusterMergeSimilarity
-        c.minSpeakerSec = minSpeakerSec
-        return c
-    }
 }
 
 /// 设置（保存在 ~/Library/Application Support/MeetingASR/settings.json）。

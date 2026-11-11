@@ -51,27 +51,6 @@ public protocol Punctuator: AnyObject {
     func punctuate(_ text: String) -> String
 }
 
-public struct DiarizationOptions: Sendable, Equatable {
-    /// 已知人数时指定（>0），否则用阈值聚类
-    public var numSpeakers: Int?
-    public var threshold: Float
-    public var minDurationOn: Float
-    public var minDurationOff: Float
-
-    public init(numSpeakers: Int? = nil, threshold: Float = 0.5, minDurationOn: Float = 0.3, minDurationOff: Float = 0.5) {
-        self.numSpeakers = numSpeakers
-        self.threshold = threshold
-        self.minDurationOn = minDurationOn
-        self.minDurationOff = minDurationOff
-    }
-}
-
-/// 说话人分离（pyannote 切分 + 声纹 + 聚类）。
-public protocol SpeakerDiarizer: AnyObject {
-    /// - Returns: 带簇编号的片段（speaker 为 "0"、"1"…），时间相对输入起点
-    func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan]
-}
-
 /// 声纹提取（CAM++）。
 public protocol SpeakerEmbedder: AnyObject {
     var modelName: String { get }
@@ -109,15 +88,13 @@ extension VoiceActivityDetector {
 public struct EngineSet {
     public var recognizer: SpeechRecognizer
     public var punctuator: Punctuator?
-    public var diarizer: SpeakerDiarizer
     public var embedder: SpeakerEmbedder
     public var vad: VoiceActivityDetector
     public var models: ModelVersions
 
-    public init(recognizer: SpeechRecognizer, punctuator: Punctuator?, diarizer: SpeakerDiarizer, embedder: SpeakerEmbedder, vad: VoiceActivityDetector, models: ModelVersions = .bundled) {
+    public init(recognizer: SpeechRecognizer, punctuator: Punctuator?, embedder: SpeakerEmbedder, vad: VoiceActivityDetector, models: ModelVersions = .bundled) {
         self.recognizer = recognizer
         self.punctuator = punctuator
-        self.diarizer = diarizer
         self.embedder = embedder
         self.vad = vad
         self.models = models

@@ -56,8 +56,7 @@ final class LiveRecognitionRunner: @unchecked Sendable {
                 numThreads: 2,
                 asrModel: recognition.asrModel,
                 provider: recognition.inferenceProvider.providerString,
-                vadConfig: recognition.segmentVAD,
-                loadDiarizer: false
+                vadConfig: recognition.segmentVAD
             )
             self.engines = engines
             guard engines.recognizer.providesTimestamps else {

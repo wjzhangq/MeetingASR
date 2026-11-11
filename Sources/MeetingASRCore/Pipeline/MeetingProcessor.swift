@@ -18,9 +18,6 @@ public enum ProcessingError: Error, CustomStringConvertible {
 public struct ProcessingOptions: Sendable {
     public var recognition: RecognitionSettings
     public var hotwords: HotwordList
-    public var segmenter: SegmenterConfig
-    /// 长音频分块分离
-    public var blockDiarization = BlockDiarizationConfig()
     public var echo: EchoDetector
     public var textEcho: TextEchoFilter
     /// 识别成功后删除原始音频（FR-P6）
@@ -28,10 +25,9 @@ public struct ProcessingOptions: Sendable {
     /// 为 false 时不改会议状态、不写逐字稿、不向人物库加样本。参数扫描用。
     public var persistResults: Bool = true
 
-    public init(recognition: RecognitionSettings = RecognitionSettings(), hotwords: HotwordList = HotwordList(words: []), segmenter: SegmenterConfig = SegmenterConfig(), echo: EchoDetector = EchoDetector(), textEcho: TextEchoFilter = TextEchoFilter(), deleteRawOnSuccess: Bool = true) {
+    public init(recognition: RecognitionSettings = RecognitionSettings(), hotwords: HotwordList = HotwordList(words: []), echo: EchoDetector = EchoDetector(), textEcho: TextEchoFilter = TextEchoFilter(), deleteRawOnSuccess: Bool = true) {
         self.recognition = recognition
         self.hotwords = hotwords
-        self.segmenter = segmenter
         self.echo = echo
         self.textEcho = textEcho
         self.deleteRawOnSuccess = deleteRawOnSuccess
@@ -415,18 +411,26 @@ public final class MeetingProcessor {
         progress(.at(.recognition, 0))
         let clusterer = SegmentClusterer(config: rec.segmentClustering)
         let assigner = SegmentAssigner(config: rec.segmentClustering)
-        
+        // 本场填的人数优先，其次设置里的默认人数；都没有就全自动判定。
+        let expectedSpeakers = (meta.expectedSpeakers ?? rec.defaultSpeakerCount).flatMap { $0 > 0 ? $0 : nil }
+        if let n = expectedSpeakers {
+            print("指定说话人数 \(n)（\(twoTrack ? "双轨，麦克风占 1 个名额" : "单轨")）")
+        }
+
         var segmentsByTrack: [TrackKind: [Segment]] = [:]
         for track in Set(allSegments.map(\.track)) {
             var trackSegs = allSegments.filter { $0.track == track }
-            
+
             // 笔记本麦克风视为同一个人。系统轨才按声纹聚类。
             if twoTrack && track == .mic {
                 for i in trackSegs.indices {
                     trackSegs[i].cluster = "mic-speaker"
                 }
             } else {
-                trackSegs = clusterer.cluster(trackSegs)
+                // 人数是会议级总数，但聚类按轨跑。双轨时麦克风整轨已固定成一个人，
+                // 占掉 1 个名额，剩下的额度给系统轨。
+                let budget = expectedSpeakers.map { twoTrack ? max(1, $0 - 1) : $0 }
+                trackSegs = clusterer.cluster(trackSegs, targetCount: budget)
                 trackSegs = assigner.assignShortSegments(trackSegs)
                 trackSegs = assigner.splitMixedSegments(trackSegs)
             }

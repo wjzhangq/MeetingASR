@@ -161,7 +161,7 @@ final class LiveRecognitionTests: XCTestCase {
         var options = ProcessingOptions()
         options.recognition.recognitionMode = .segmentStream
         let engines = EngineSet(
-            recognizer: asr, punctuator: nil, diarizer: IdleDiarizer(), embedder: FixedEmbedder(), vad: PassthroughVAD())
+            recognizer: asr, punctuator: nil, embedder: FixedEmbedder(), vad: PassthroughVAD())
         let processor = MeetingProcessor(engines: engines, store: store, people: people, options: options)
         let transcript = try processor.process(meeting)
         XCTAssertEqual(asr.calls, callsBefore, "覆盖完整的段日志不应再跑 ASR")
@@ -240,10 +240,3 @@ final class LiveRecognitionTests: XCTestCase {
     }
 }
 
-/// 测试里不需要真正的分离器。
-private final class IdleDiarizer: SpeakerDiarizer {
-    func diarize(_ samples: [Float], options: DiarizationOptions, progress: @escaping (Double) -> Bool) -> [RawSpan] {
-        _ = progress(1)
-        return []
-    }
-}
