@@ -209,7 +209,7 @@ final class MicRecorder {
             engine.stop()
             if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
             configObserver = nil
-            resampler = nil
+            self.resampler = nil
             log.info("discarded late-built mic engine; recorder already stopped")
             throw CoreAudioError(kAudioHardwareNotRunningError, "麦克风已停止，放弃本次构建")
         }
