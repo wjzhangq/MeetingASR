@@ -47,6 +47,9 @@ final class MicRecorder {
     /// 保护跨线程访问的字段：running / deviceName / rebuildWorkItem
     private let stateLock = NSLock()
 
+    /// 标记对象是否正在析构，避免异步闭包捕获正在释放的 self
+    private var isDeinitializing = false
+
     init(writer: AlignedTrackWriter, preferredDeviceUID: String?, voiceProcessing: Bool) {
         self.writer = writer
         self.preferredUID = preferredDeviceUID
@@ -100,11 +103,24 @@ final class MicRecorder {
             AudioObjectRemovePropertyListenerBlock(.system, &defaultInputAddress, .main, block)
         }
         deviceListener = nil
-        // 拆除也放到 engineQueue，并限时等待：队列卡在 CoreAudio 时不拖住调用方。
-        // 强引用 self：deinit 也走这条路径，weak self 会在那里直接变 nil 导致不拆除。
+
+        // [修复 Swift 运行时崩溃] 区分 deinit 路径与正常 stop 路径。
+        // 析构期间保留 self 会让引用计数经历 0 → 1 → 0，Swift 运行时判定对象被「复活」后 abort。
+        if isDeinitializing {
+            // deinit 路径：直接同步拆除，不做队列跳转。
+            // 1. 不能把 self 逃逸到其他队列 —— 这正是崩溃的成因；
+            // 2. 也不能用 engineQueue.sync —— 正常 stop 超时后，持有 self 的 async 块
+            //    会在 engineQueue 上触发本次 deinit，sync 回同一队列将死锁；
+            // 3. 此刻已无其他强引用（weak 全部为 nil），属性访问不存在并发。
+            performTeardown()
+            return
+        }
+
+        // 正常 stop 路径：异步拆除 + 限时等待（保持原有超时保护）
+        // 强引用 self 是安全的：对象存活期间的异步操作
         let done = DispatchSemaphore(value: 0)
         engineQueue.async {
-            self.teardownEngine()
+            self.performTeardown()
             done.signal()
         }
         if done.wait(timeout: .now() + Self.teardownTimeout) == .timedOut {
@@ -217,10 +233,10 @@ final class MicRecorder {
         log.info("mic started: \(name, privacy: .public) @\(rate)")
     }
 
-    /// 停止并释放 engine。必须在 engineQueue 上调用。
-    private func teardownEngine() {
-        dispatchPrecondition(condition: .onQueue(engineQueue))
-
+    /// 停止并释放 engine 的实际逻辑。
+    /// 调用方须保证无并发访问：在 engineQueue 上执行，或在 deinit 中（此时已无其他引用）。
+    /// 这里不加 dispatchPrecondition —— deinit 路径会在调用方线程上直接执行。
+    private func performTeardown() {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = nil
         if let engine {
@@ -258,7 +274,7 @@ final class MicRecorder {
     /// 调用方确保只从 engineQueue 调用，且已通过 weak self 检查。
     private func performRebuild() {
         dispatchPrecondition(condition: .onQueue(engineQueue))
-        teardownEngine()
+        performTeardown()
         attemptRebuild(1)
     }
 
@@ -313,6 +329,7 @@ final class MicRecorder {
     }
 
     deinit {
+        isDeinitializing = true
         stop()
     }
 }
